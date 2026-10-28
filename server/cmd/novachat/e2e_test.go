@@ -1,0 +1,211 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/gorilla/websocket"
+	"github.com/redis/go-redis/v9"
+
+	"github.com/mahmudultopu/novachat/server/internal/config"
+	"github.com/mahmudultopu/novachat/server/internal/db"
+)
+
+// TestEndToEnd signs up two users and sends a message between them over
+// WebSockets. It needs a scratch Postgres database and Redis:
+//
+//	NOVACHAT_TEST_DATABASE_URL=postgres://novachat:novachat@localhost:5432/novachat_test?sslmode=disable \
+//	NOVACHAT_TEST_REDIS_URL=redis://localhost:6379/15 go test ./...
+func TestEndToEnd(t *testing.T) {
+	dbURL, redisURL := os.Getenv("NOVACHAT_TEST_DATABASE_URL"), os.Getenv("NOVACHAT_TEST_REDIS_URL")
+	if dbURL == "" || redisURL == "" {
+		t.Skip("set NOVACHAT_TEST_DATABASE_URL and NOVACHAT_TEST_REDIS_URL to run")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	pool, err := db.Open(ctx, dbURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	if err := db.Migrate(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	ropts, _ := redis.ParseURL(redisURL)
+	rdb := redis.NewClient(ropts)
+	defer rdb.Close()
+	rdb.FlushDB(ctx)
+
+	cfg := config.Config{Env: "dev", DevOTP: "123456"}
+	handler, closeHub := NewHandler(ctx, cfg, pool, rdb)
+	defer closeHub()
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	suffix := fmt.Sprintf("%08d", time.Now().UnixNano()%100_000_000)
+	alice := signUp(t, srv.URL, "+1555"+suffix, "Alice")
+	bob := signUp(t, srv.URL, "+1666"+suffix, "Bob")
+
+	// A wrong code is rejected.
+	var errResp map[string]string
+	if code := post(t, srv.URL+"/v1/auth/verify", "", map[string]string{"phone": "+1555" + suffix, "code": "000000"}, &errResp); code != http.StatusUnauthorized {
+		t.Fatalf("wrong code: got status %d", code)
+	}
+
+	// Alice finds Bob by phone number.
+	var found struct{ ID string }
+	if code := get(t, srv.URL+"/v1/users/by-phone?phone=%2B1666"+suffix, alice.token, &found); code != 200 || found.ID != bob.id {
+		t.Fatalf("lookup Bob: status %d, id %q", code, found.ID)
+	}
+
+	aws := dial(t, srv.URL, alice.token)
+	bws := dial(t, srv.URL, bob.token)
+
+	clientID := "0b6a9f3e-7c1d-4d5e-9f00-1234567890ab"
+	send := map[string]string{"type": "send", "client_id": clientID, "to": bob.id, "body": "  Hello Bob  "}
+	if err := aws.WriteJSON(send); err != nil {
+		t.Fatal(err)
+	}
+
+	sent := readType(t, aws, "message")
+	got := readType(t, bws, "message")
+	if sent.Message.ClientID != clientID || got.Message.ID != sent.Message.ID || got.Message.Body != "Hello Bob" {
+		t.Fatalf("unexpected messages: sent %+v got %+v", sent.Message, got.Message)
+	}
+
+	// Resending the same client_id does not create a second message.
+	aws.WriteJSON(send)
+	again := readType(t, aws, "message")
+	if again.Message.ID != sent.Message.ID {
+		t.Fatalf("retry created a new message: %d != %d", again.Message.ID, sent.Message.ID)
+	}
+
+	// Bob reads it and Alice sees the blue ticks.
+	bws.WriteJSON(map[string]any{"type": "receipt", "status": "read", "message_ids": []int64{got.Message.ID}})
+	receipt := readType(t, aws, "receipt")
+	if receipt.Status != "read" || len(receipt.MessageIDs) != 1 || receipt.MessageIDs[0] != sent.Message.ID {
+		t.Fatalf("unexpected receipt %+v", receipt)
+	}
+
+	// Bob's other device catches up with sync, and both see the chat listed.
+	var synced []struct{ ID int64 }
+	get(t, fmt.Sprintf("%s/v1/sync?after=%d", srv.URL, sent.Message.ID-1), bob.token, &synced)
+	if len(synced) != 1 || synced[0].ID != sent.Message.ID {
+		t.Fatalf("sync returned %+v", synced)
+	}
+	var convs []struct {
+		Peer        struct{ ID, Name string }
+		LastMessage struct{ Body string } `json:"last_message"`
+		Unread      int
+	}
+	get(t, srv.URL+"/v1/conversations", bob.token, &convs)
+	if len(convs) != 1 || convs[0].Peer.Name != "Alice" || convs[0].LastMessage.Body != "Hello Bob" || convs[0].Unread != 0 {
+		t.Fatalf("conversations %+v", convs)
+	}
+
+	// Without a token the socket is refused.
+	if _, resp, err := websocket.DefaultDialer.Dial(wsURL(srv.URL), nil); err == nil || resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated dial: err %v", err)
+	}
+}
+
+type account struct{ id, token string }
+
+func signUp(t *testing.T, base, phone, name string) account {
+	t.Helper()
+	var req struct {
+		DevCode string `json:"dev_code"`
+	}
+	if code := post(t, base+"/v1/auth/request-code", "", map[string]string{"phone": phone}, &req); code != 200 || req.DevCode == "" {
+		t.Fatalf("request-code: status %d, dev code %q", code, req.DevCode)
+	}
+	var ver struct {
+		Token string
+		User  struct{ ID string }
+		IsNew bool `json:"is_new"`
+	}
+	if code := post(t, base+"/v1/auth/verify", "", map[string]string{"phone": phone, "code": req.DevCode, "device_name": "test"}, &ver); code != 200 || !ver.IsNew {
+		t.Fatalf("verify: status %d, %+v", code, ver)
+	}
+	var me struct{ Name string }
+	if code := do(t, "PATCH", base+"/v1/me", ver.Token, map[string]string{"name": name}, &me); code != 200 || me.Name != name {
+		t.Fatalf("set name: status %d", code)
+	}
+	return account{ver.User.ID, ver.Token}
+}
+
+type frame struct {
+	Type       string
+	Status     string
+	MessageIDs []int64 `json:"message_ids"`
+	Message    *struct {
+		ID       int64
+		ClientID string `json:"client_id"`
+		Body     string
+	}
+}
+
+func readType(t *testing.T, c *websocket.Conn, typ string) frame {
+	t.Helper()
+	c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	for {
+		var f frame
+		if err := c.ReadJSON(&f); err != nil {
+			t.Fatalf("waiting for %s: %v", typ, err)
+		}
+		if f.Type == typ {
+			return f
+		}
+	}
+}
+
+func wsURL(base string) string { return "ws" + strings.TrimPrefix(base, "http") + "/v1/ws" }
+
+func dial(t *testing.T, base, token string) *websocket.Conn {
+	t.Helper()
+	c, _, err := websocket.DefaultDialer.Dial(wsURL(base), http.Header{"Authorization": {"Bearer " + token}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.Close() })
+	readType(t, c, "ready")
+	return c
+}
+
+func post(t *testing.T, url, token string, body, out any) int {
+	return do(t, "POST", url, token, body, out)
+}
+func get(t *testing.T, url, token string, out any) int { return do(t, "GET", url, token, nil, out) }
+
+func do(t *testing.T, method, url, token string, body, out any) int {
+	t.Helper()
+	var rd *bytes.Reader
+	if body != nil {
+		b, _ := json.Marshal(body)
+		rd = bytes.NewReader(b)
+	} else {
+		rd = bytes.NewReader(nil)
+	}
+	req, _ := http.NewRequest(method, url, rd)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if out != nil {
+		json.NewDecoder(resp.Body).Decode(out)
+	}
+	return resp.StatusCode
+}

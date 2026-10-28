@@ -1,0 +1,51 @@
+# Local development stack: Postgres, Redis and the NovaChat server.
+#   docker compose -f infra/docker-compose.yml up --build
+# The server listens on http://localhost:8080 (the Android emulator reaches
+# it as http://10.0.2.2:8080).
+name: novachat
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: novachat
+      POSTGRES_PASSWORD: novachat
+      POSTGRES_DB: novachat
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U novachat"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  server:
+    build: ../server
+    environment:
+      NOVACHAT_ENV: dev
+      NOVACHAT_DEV_OTP: "123456"
+      NOVACHAT_DATABASE_URL: postgres://novachat:novachat@postgres:5432/novachat?sslmode=disable
+      NOVACHAT_REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:
