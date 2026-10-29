@@ -1,0 +1,48 @@
+# Render Blueprint: deploys the NovaChat server with Postgres and Redis
+# (Render Key Value) on Render's free plan. In the Render dashboard choose
+# New > Blueprint and pick this repository. See "Put the server online" in
+# README.md.
+services:
+  - type: web
+    name: novachat
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./server/Dockerfile
+    dockerContext: ./server
+    healthCheckPath: /healthz
+    buildFilter:
+      paths:
+        - server/**
+    envVars:
+      - key: PORT
+        value: "8080"
+      # Test server: no SMS is sent and every number accepts NOVACHAT_DEV_OTP.
+      # Switch to prod once an SMS provider is wired in.
+      - key: NOVACHAT_ENV
+        value: dev
+      - key: NOVACHAT_DEV_OTP
+        value: "123456"
+      - key: NOVACHAT_DATABASE_URL
+        fromDatabase:
+          name: novachat-db
+          property: connectionString
+      - key: NOVACHAT_REDIS_URL
+        fromService:
+          type: keyvalue
+          name: novachat-redis
+          property: connectionString
+
+  - type: keyvalue
+    name: novachat-redis
+    plan: free
+    region: singapore
+    ipAllowList: [] # only reachable from other Render services
+    maxmemoryPolicy: noeviction
+
+databases:
+  - name: novachat-db
+    plan: free
+    region: singapore
+    databaseName: novachat
+    user: novachat

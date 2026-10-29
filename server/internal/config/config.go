@@ -22,7 +22,7 @@ func (c Config) IsDev() bool { return c.Env == "dev" }
 func Load() (Config, error) {
 	c := Config{
 		Env:         get("NOVACHAT_ENV", "dev"),
-		HTTPAddr:    get("NOVACHAT_HTTP_ADDR", ":8080"),
+		HTTPAddr:    get("NOVACHAT_HTTP_ADDR", ":"+get("PORT", "8080")),
 		DatabaseURL: get("NOVACHAT_DATABASE_URL", "postgres://novachat:novachat@localhost:5432/novachat?sslmode=disable"),
 		RedisURL:    get("NOVACHAT_REDIS_URL", "redis://localhost:6379/0"),
 		DevOTP:      get("NOVACHAT_DEV_OTP", "123456"),
