@@ -299,6 +299,24 @@ pause. On your own updates, tap 👁 to see who viewed them, or delete them.
 * "Seen" and "deleted" travel the same way, so the server never learns who
   posts what or who watched it. Each phone deletes updates after 24 hours.
 
+### Notifications
+
+New messages show a notification with the sender's photo, the last few
+messages of that chat, and **Reply** and **Mark as read** buttons, so you can
+answer without opening the app. Group messages are grouped per chat with each
+sender's name.
+
+* To get messages while the app is closed, NovaChat keeps its encrypted
+  connection open in a small background service (a silent "Connected" note
+  that Android requires). Turn it off under **Settings → Instant
+  notifications**; messages then arrive the next time you open the app. No
+  Google services are needed, and message text never leaves your phone
+  unencrypted.
+* The app tells the server when it is on screen (`{"type": "active"}`), so
+  you only show as "online" while you actually have NovaChat open, not while
+  it is connected in the background.
+* The service starts again after the phone restarts.
+
 ### API
 
 | Method and path | Auth | Purpose |
@@ -339,6 +357,7 @@ App to server:
 {"type": "receipt", "status": "read", "message_ids": [42, 43]}
 {"type": "typing", "to": "<user id>"}
 {"type": "presence_query", "to": "<user id>"}
+{"type": "active", "active": false}
 ```
 
 Server to app:
@@ -391,6 +410,7 @@ Following the builder guide, in order:
 6. ~~**Groups**~~ (done in 0.7.0): admins, settings and invite links, see
    [Groups](#groups).
 7. ~~**Status updates**~~ (done in 0.8.0), see [Status updates](#status-updates).
-8. **Push notifications** with Firebase Cloud Messaging for offline phones.
+8. ~~**Notifications**~~ (done in 0.9.0): quick reply and mark as read, see
+   [Notifications](#notifications).
 9. **Voice and video calls** (WebRTC + LiveKit + coturn).
 10. A real **SMS provider** for production sign-up, and deployment.

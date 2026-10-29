@@ -246,6 +246,10 @@ abstract class ChatDao {
     @Query("SELECT COUNT(*) FROM messages WHERE senderId = :me AND parentClientId = :parent")
     abstract suspend fun copyCount(me: String, parent: String): Int
 
+    /** The chat message (not a hidden or event row) someone else sent with this server ID. */
+    @Query("SELECT * FROM messages WHERE id = :id AND senderId != :me AND control IS NULL AND system = 0 LIMIT 1")
+    abstract suspend fun incomingById(id: Long, me: String): MessageEntity?
+
     @Query("SELECT EXISTS (SELECT 1 FROM messages WHERE id = :id)")
     abstract suspend fun hasId(id: Long): Boolean
 
@@ -346,6 +350,9 @@ abstract class ChatDao {
 
     @Query("SELECT * FROM users WHERE id = :id")
     abstract fun user(id: String): Flow<UserEntity?>
+
+    @Query("SELECT * FROM users WHERE id = :id")
+    abstract suspend fun userNow(id: String): UserEntity?
 
     @Query("SELECT id FROM users")
     abstract suspend fun userIds(): List<String>

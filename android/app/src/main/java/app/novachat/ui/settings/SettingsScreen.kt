@@ -1,5 +1,7 @@
 package app.novachat.ui.settings
 
+import android.content.Intent
+import android.provider.Settings
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -12,19 +14,22 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Icon
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -39,6 +44,7 @@ import kotlinx.coroutines.launch
 fun SettingsScreen(openProfile: () -> Unit, openStarred: () -> Unit, modifier: Modifier = Modifier) {
     val container = appContainer()
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
     val state by container.session.collectAsStateWithLifecycle()
     val session = (state as? SessionState.SignedIn)?.session ?: return
 
@@ -76,6 +82,30 @@ fun SettingsScreen(openProfile: () -> Unit, openStarred: () -> Unit, modifier: M
                     Icon(Icons.Filled.Star, null, tint = MaterialTheme.colorScheme.primary)
                     Spacer(Modifier.width(16.dp))
                     Text("Starred messages", style = MaterialTheme.typography.titleSmall)
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            val background by container.backgroundConnection.collectAsStateWithLifecycle()
+            Surface(shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface, tonalElevation = 1.dp) {
+                Column(Modifier.fillMaxWidth().padding(16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Instant notifications", style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                "Stay connected while NovaChat is closed, so messages arrive right away. " +
+                                    "NovaChat uses no push service, so nobody else learns when you get messages.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Spacer(Modifier.width(12.dp))
+                        Switch(checked = background, onCheckedChange = container::setBackgroundConnection)
+                    }
+                    TextButton(onClick = {
+                        context.startActivity(
+                            Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName),
+                        )
+                    }) { Text("Notification sound and style") }
                 }
             }
             Spacer(Modifier.height(24.dp))

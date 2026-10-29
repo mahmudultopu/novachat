@@ -87,6 +87,18 @@ func (h *Hub) remove(c *client) (last bool) {
 	return false
 }
 
+// anyActive reports whether userID has a connection here with the app on screen.
+func (h *Hub) anyActive(userID string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for c := range h.conns[userID] {
+		if c.active.Load() {
+			return true
+		}
+	}
+	return false
+}
+
 func presenceKey(userID string) string { return "nc:online:" + userID }
 
 // MarkOnline records that userID has a live connection. The key expires on
