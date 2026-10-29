@@ -108,8 +108,20 @@ You can also set the default for every build in `android/gradle.properties`
 (`novachat.serverUrl`). Allow port 8080 through your laptop's firewall if the
 phone can't connect.
 
+### Just want to try it?
+
+Every change merged to `main` publishes a ready-to-install test build that
+talks to the online test server:
+
+**<https://github.com/mahmudultopu/novachat/releases/download/latest/novachat.apk>**
+
+Open that link on an Android phone, allow installing from your browser when
+asked, and tap **Install**. New builds install over the old one and keep your
+chats. (If you installed a build from before version 0.2.0, uninstall it once
+first, because older builds were signed with a different key.)
+
 Each pull request's CI run also builds a debug APK you can download from the
-run's **Artifacts** section and install on any Android phone.
+run's **Artifacts** section.
 
 ## 4. Put the server online
 
@@ -147,6 +159,9 @@ the plans in Render when you need it always on.
   verifies it (`POST /v1/auth/verify`) and gets a bearer token for this
   device. Codes live in Redis for 5 minutes, with limits on requests and wrong
   attempts. Only a hash of each token is stored in Postgres.
+* **On the phone**: chats are stored in a Room database (`data/local`). The
+  screens read from it directly, and the sync code writes server data into
+  it, so the app works the same online and offline.
 * **Messaging**: the app keeps one WebSocket open and reconnects with backoff
   when it drops. After every connect it calls `GET /v1/sync?after=<last id>`
   to catch up, then resends anything still pending. Each message carries a
@@ -215,8 +230,10 @@ request.
 
 Following the builder guide, in order:
 
-1. **Local storage**: Room + SQLCipher on the phone so chats open instantly
-   and work offline; keep the session token under an Android Keystore key.
+1. ~~**Local storage**~~ (done in 0.2.0): chats live in a Room database on
+   the phone, so they open instantly, work offline and survive restarts. Only
+   new messages are fetched after a reconnect. SQLCipher encryption of that
+   database and a Keystore-protected session token come with step 2.
 2. **End-to-end encryption**: per-device keys, a key directory on the server,
    and Double Ratchet sessions (vodozemac via a small Rust crate, or
    libsignal). Message bodies on the server become opaque ciphertext.

@@ -53,8 +53,31 @@ jobs:
           distribution: temurin
           java-version: "17"
       - uses: gradle/actions/setup-gradle@v4
-      - run: ./gradlew assembleDebug --stacktrace
+      # CI builds point at the online test server, so the APK works on any phone.
+      - run: ./gradlew assembleDebug --stacktrace -Pnovachat.serverUrl=https://novachat-5aj6.onrender.com
       - uses: actions/upload-artifact@v4
         with:
           name: novachat-debug-apk
           path: android/app/build/outputs/apk/debug/*.apk
+
+  # Every merge to main publishes the app as a direct download:
+  # https://github.com/mahmudultopu/novachat/releases/download/latest/novachat.apk
+  publish-apk:
+    name: Publish test APK
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [server, android]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: novachat-debug-apk
+      - run: |
+          mv *.apk novachat.apk
+          gh release delete latest --yes --cleanup-tag --repo "$GITHUB_REPOSITORY" || true
+          gh release create latest novachat.apk --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "NovaChat test build" \
+            --notes "Latest test build from main ($GITHUB_SHA). Open this page on your Android phone and tap novachat.apk to install."
+        env:
+          GH_TOKEN: ${{ github.token }}
