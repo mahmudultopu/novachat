@@ -18,6 +18,7 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import app.novachat.data.Attachment
 import app.novachat.data.ChatMessage
+import app.novachat.data.MessageRef
 import app.novachat.data.NovaJson
 import app.novachat.data.User
 import kotlinx.coroutines.flow.Flow
@@ -53,6 +54,20 @@ data class MessageEntity(
     val attachment: String? = null,
     /** Path of the decrypted file in the app's private storage. */
     val localPath: String? = null,
+    /** [MessageRef] (JSON) of the message this one replies to. */
+    val replyTo: String? = null,
+    @ColumnInfo(defaultValue = "0") val forwarded: Boolean = false,
+    /** Reactions as a JSON map of user ID to emoji. */
+    val reactions: String? = null,
+    val editedAtMillis: Long? = null,
+    @ColumnInfo(defaultValue = "0") val deleted: Boolean = false,
+    @ColumnInfo(defaultValue = "0") val starred: Boolean = false,
+    /**
+     * A hidden control message (reaction, edit, delete) as [MessageContent]
+     * JSON. It is stored so it goes out after a reconnect and so the sync
+     * position stays right, but never shown as a bubble.
+     */
+    val control: String? = null,
 ) {
     fun toChatMessage() = ChatMessage(
         clientId = clientId,
@@ -67,6 +82,13 @@ data class MessageEntity(
         undecryptable = undecryptable,
         attachment = attachment?.let { runCatching { NovaJson.decodeFromString<Attachment>(it) }.getOrNull() },
         localPath = localPath,
+        peerId = peerId,
+        replyTo = replyTo?.let { runCatching { NovaJson.decodeFromString<MessageRef>(it) }.getOrNull() },
+        forwarded = forwarded,
+        reactions = reactions?.let { runCatching { NovaJson.decodeFromString<Map<String, String>>(it) }.getOrNull() }.orEmpty(),
+        editedAtMillis = editedAtMillis,
+        deleted = deleted,
+        starred = starred,
     )
 }
 
@@ -109,7 +131,7 @@ data class UnreadCount(val peerId: String, val unread: Int)
 abstract class ChatDao {
     // Acknowledged messages in server order, then ones still waiting to go out.
     @Query(
-        """SELECT * FROM messages WHERE peerId = :peerId
+        """SELECT * FROM messages WHERE peerId = :peerId AND control IS NULL
            ORDER BY id IS NULL, id, createdAtMillis""",
     )
     abstract fun messagesWith(peerId: String): Flow<List<MessageEntity>>
@@ -117,14 +139,14 @@ abstract class ChatDao {
     /** The newest message of every chat. */
     @Query(
         """SELECT * FROM messages AS m WHERE m.rowid = (
-               SELECT x.rowid FROM messages AS x WHERE x.peerId = m.peerId
+               SELECT x.rowid FROM messages AS x WHERE x.peerId = m.peerId AND x.control IS NULL
                ORDER BY x.id IS NULL DESC, x.id DESC, x.createdAtMillis DESC LIMIT 1)""",
     )
     abstract fun lastMessages(): Flow<List<MessageEntity>>
 
     @Query(
         """SELECT peerId, COUNT(*) AS unread FROM messages
-           WHERE senderId != :me AND readAt IS NULL GROUP BY peerId""",
+           WHERE senderId != :me AND readAt IS NULL AND control IS NULL GROUP BY peerId""",
     )
     abstract fun unreadCounts(me: String): Flow<List<UnreadCount>>
 
@@ -165,6 +187,29 @@ abstract class ChatDao {
 
     @Query("UPDATE messages SET localPath = :path WHERE senderId = :senderId AND clientId = :clientId")
     abstract suspend fun setLocalPath(senderId: String, clientId: String, path: String)
+
+    @Query("SELECT * FROM messages WHERE starred = 1 ORDER BY createdAtMillis DESC")
+    abstract fun starred(): Flow<List<MessageEntity>>
+
+    @Query("UPDATE messages SET starred = :starred WHERE senderId = :senderId AND clientId = :clientId")
+    abstract suspend fun setStarred(senderId: String, clientId: String, starred: Boolean)
+
+    @Query("UPDATE messages SET reactions = :reactions WHERE senderId = :senderId AND clientId = :clientId")
+    abstract suspend fun setReactions(senderId: String, clientId: String, reactions: String?)
+
+    @Query("UPDATE messages SET body = :body, editedAtMillis = :at WHERE senderId = :senderId AND clientId = :clientId AND deleted = 0")
+    abstract suspend fun applyEdit(senderId: String, clientId: String, body: String, at: Long)
+
+    /** Deleted for everyone: keeps a placeholder bubble, drops the content. */
+    @Query(
+        """UPDATE messages SET deleted = 1, body = '', attachment = NULL, localPath = NULL,
+           reactions = NULL, starred = 0, replyTo = NULL, editedAtMillis = NULL
+           WHERE senderId = :senderId AND clientId = :clientId""",
+    )
+    abstract suspend fun markDeleted(senderId: String, clientId: String)
+
+    @Query("DELETE FROM messages WHERE senderId = :senderId AND clientId = :clientId")
+    abstract suspend fun deleteMessage(senderId: String, clientId: String)
 
     @Query("SELECT localPath FROM messages WHERE localPath IS NOT NULL")
     abstract suspend fun localPaths(): List<String>
@@ -251,7 +296,7 @@ abstract class ChatDao {
  */
 @Database(
     entities = [MessageEntity::class, UserEntity::class, MetaEntity::class, SessionEntity::class, PreKeyEntity::class],
-    version = 4,
+    version = 5,
     exportSchema = false,
 )
 abstract class ChatDatabase : RoomDatabase() {
@@ -285,9 +330,22 @@ abstract class ChatDatabase : RoomDatabase() {
             }
         }
 
+        /** 4 -> 5: replies, reactions, edits, deletes, forwards and stars. */
+        private val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `messages` ADD COLUMN `replyTo` TEXT")
+                db.execSQL("ALTER TABLE `messages` ADD COLUMN `forwarded` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `messages` ADD COLUMN `reactions` TEXT")
+                db.execSQL("ALTER TABLE `messages` ADD COLUMN `editedAtMillis` INTEGER")
+                db.execSQL("ALTER TABLE `messages` ADD COLUMN `deleted` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `messages` ADD COLUMN `starred` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `messages` ADD COLUMN `control` TEXT")
+            }
+        }
+
         fun open(context: Context): ChatDatabase =
             Room.databaseBuilder(context, ChatDatabase::class.java, "novachat.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                 .build()
     }
 }

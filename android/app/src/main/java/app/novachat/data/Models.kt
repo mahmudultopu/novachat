@@ -85,7 +85,18 @@ data class ChatMessage(
     val attachment: Attachment? = null,
     /** The decrypted file on this phone, once sent or downloaded. */
     val localPath: String? = null,
+    val peerId: String = "",
+    val replyTo: MessageRef? = null,
+    val forwarded: Boolean = false,
+    /** Who reacted with which emoji, by user ID. */
+    val reactions: Map<String, String> = emptyMap(),
+    val editedAtMillis: Long? = null,
+    /** Deleted for everyone: only a placeholder is left. */
+    val deleted: Boolean = false,
+    val starred: Boolean = false,
 ) {
+    val ref: MessageRef get() = MessageRef(senderId, clientId)
+
     val status: DeliveryStatus
         get() = when {
             failed -> DeliveryStatus.Failed
@@ -108,12 +119,41 @@ data class Session(
     val serverUrl: String,
 )
 
-/** What a message says. Encrypted end to end as JSON inside the envelope. */
+/**
+ * What a message says. Encrypted end to end as JSON inside the envelope.
+ *
+ * A message with [reaction], [edit] or [delete] is a hidden control message:
+ * it changes an earlier message instead of showing up as a bubble. Because
+ * they travel encrypted like everything else, the server cannot tell who
+ * reacted with what, or what a message was edited to.
+ */
 @Serializable
 data class MessageContent(
     val text: String? = null,
     val attachment: Attachment? = null,
+    @SerialName("reply_to") val replyTo: MessageRef? = null,
+    val forwarded: Boolean = false,
+    val reaction: Reaction? = null,
+    val edit: Edit? = null,
+    val delete: MessageRef? = null,
+) {
+    val isControl: Boolean get() = reaction != null || edit != null || delete != null
+}
+
+/** Points at one message: messages are unique per sender and client ID. */
+@Serializable
+data class MessageRef(
+    @SerialName("sender_id") val senderId: String,
+    @SerialName("client_id") val clientId: String,
 )
+
+/** An emoji reaction to [target]; an empty [emoji] takes the reaction back. */
+@Serializable
+data class Reaction(val target: MessageRef, val emoji: String)
+
+/** New text for one of the sender's own messages. */
+@Serializable
+data class Edit(val target: MessageRef, val text: String)
 
 enum class AttachmentKind { image, video, voice, file }
 

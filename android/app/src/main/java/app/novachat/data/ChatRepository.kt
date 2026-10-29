@@ -195,7 +195,7 @@ class ChatRepository(
         return api.userByPhone(s, phone).also { dao.upsertUser(it.toEntity()) }
     }
 
-    fun send(peerId: String, text: String) {
+    fun send(peerId: String, text: String, replyTo: MessageRef? = null) {
         val s = session ?: return
         val body = text.trim()
         if (body.isEmpty()) return
@@ -210,6 +210,7 @@ class ChatRepository(
             deliveredAt = null,
             readAt = null,
             failed = false,
+            replyTo = replyTo?.let { NovaJson.encodeToString(it) },
         )
         scope.launch {
             dao.upsertMessages(listOf(msg))
@@ -218,7 +219,7 @@ class ChatRepository(
     }
 
     /** Sends a photo, video, voice note or document, with an optional caption. */
-    fun sendAttachment(peerId: String, prepared: PreparedMedia, caption: String = "") {
+    fun sendAttachment(peerId: String, prepared: PreparedMedia, caption: String = "", replyTo: MessageRef? = null) {
         val s = session ?: return
         val msg = MessageEntity(
             senderId = s.user.id,
@@ -233,10 +234,165 @@ class ChatRepository(
             failed = false,
             attachment = NovaJson.encodeToString(prepared.attachment),
             localPath = prepared.file.path,
+            replyTo = replyTo?.let { NovaJson.encodeToString(it) },
         )
         scope.launch {
             dao.upsertMessages(listOf(msg))
             deliver(msg)
+        }
+    }
+
+    /** Reacts to a message with [emoji], or takes the reaction back with "". */
+    fun react(m: ChatMessage, emoji: String) {
+        val me = session?.user?.id ?: return
+        if (m.deleted || m.undecryptable) return
+        scope.launch {
+            writeLock.withLock { setReaction(m.ref, me, emoji) }
+            sendControl(m.peerId, MessageContent(reaction = Reaction(m.ref, emoji)))
+        }
+    }
+
+    /** Changes the text of one of your own sent messages, on both phones. */
+    fun edit(m: ChatMessage, text: String) {
+        val me = session?.user?.id ?: return
+        val body = text.trim()
+        if (m.senderId != me || body.isEmpty() || body == m.body || !canEdit(m, me)) return
+        scope.launch {
+            writeLock.withLock { dao.applyEdit(me, m.clientId, body, System.currentTimeMillis()) }
+            sendControl(m.peerId, MessageContent(edit = Edit(m.ref, body)))
+        }
+    }
+
+    /** Replaces one of your messages with "This message was deleted" on both phones. */
+    fun deleteForEveryone(m: ChatMessage) {
+        val me = session?.user?.id ?: return
+        if (!canDeleteForEveryone(m, me)) return
+        scope.launch {
+            writeLock.withLock { removeContent(m.senderId, m.clientId, m.localPath) }
+            sendControl(m.peerId, MessageContent(delete = m.ref))
+        }
+    }
+
+    /** Removes a message from this phone only. */
+    fun deleteForMe(m: ChatMessage) {
+        scope.launch {
+            writeLock.withLock {
+                dao.deleteMessage(m.senderId, m.clientId)
+                m.localPath?.let { deleteFile(it) }
+            }
+        }
+    }
+
+    fun setStarred(m: ChatMessage, starred: Boolean) {
+        scope.launch { dao.setStarred(m.senderId, m.clientId, starred) }
+    }
+
+    /** Starred messages from every chat, newest first. */
+    val starred: Flow<List<ChatMessage>> = dao.starred().map { list -> list.map { it.toChatMessage() } }
+
+    /**
+     * Sends a copy of [m] to each of [peerIds]. A file that is already
+     * uploaded is not uploaded again: the copy points at the same encrypted
+     * blob and carries the same key.
+     */
+    fun forward(m: ChatMessage, peerIds: Collection<String>) {
+        val s = session ?: return
+        if (m.deleted || m.undecryptable) return
+        scope.launch {
+            for (peerId in peerIds) {
+                val path = m.localPath?.let { src ->
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        val from = java.io.File(src)
+                        if (!from.exists()) return@withContext null
+                        media.newFile(from.extension.ifEmpty { "bin" }).also { from.copyTo(it) }.path
+                    }
+                }
+                val msg = MessageEntity(
+                    senderId = s.user.id,
+                    clientId = UUID.randomUUID().toString(),
+                    id = null,
+                    recipientId = peerId,
+                    peerId = peerId,
+                    body = m.body,
+                    createdAtMillis = System.currentTimeMillis(),
+                    deliveredAt = null,
+                    readAt = null,
+                    failed = false,
+                    attachment = m.attachment?.let { NovaJson.encodeToString(it) },
+                    localPath = path,
+                    forwarded = true,
+                )
+                dao.upsertMessages(listOf(msg))
+                scope.launch { deliver(msg) }
+            }
+        }
+    }
+
+    fun canEdit(m: ChatMessage, me: String?): Boolean =
+        m.senderId == me && m.id != null && !m.deleted && m.attachment == null &&
+            System.currentTimeMillis() - m.createdAtMillis < EDIT_WINDOW_MS
+
+    fun canDeleteForEveryone(m: ChatMessage, me: String?): Boolean =
+        m.senderId == me && m.id != null && !m.deleted &&
+            System.currentTimeMillis() - m.createdAtMillis < DELETE_WINDOW_MS
+
+    /** Queues a hidden control message (reaction, edit, delete) for [peerId]. */
+    private suspend fun sendControl(peerId: String, content: MessageContent) {
+        val s = session ?: return
+        val msg = MessageEntity(
+            senderId = s.user.id,
+            clientId = UUID.randomUUID().toString(),
+            id = null,
+            recipientId = peerId,
+            peerId = peerId,
+            body = "",
+            createdAtMillis = System.currentTimeMillis(),
+            deliveredAt = null,
+            readAt = null,
+            failed = false,
+            control = NovaJson.encodeToString(content),
+        )
+        dao.upsertMessages(listOf(msg))
+        deliver(msg)
+    }
+
+    private suspend fun setReaction(target: MessageRef, who: String, emoji: String) {
+        val row = dao.message(target.senderId, target.clientId) ?: return
+        val now = row.reactions?.let { runCatching { NovaJson.decodeFromString<Map<String, String>>(it) }.getOrNull() }.orEmpty()
+        val next = if (emoji.isEmpty()) now - who else now + (who to emoji)
+        dao.setReactions(target.senderId, target.clientId, if (next.isEmpty()) null else NovaJson.encodeToString(next))
+    }
+
+    private suspend fun removeContent(senderId: String, clientId: String, localPath: String?) {
+        dao.markDeleted(senderId, clientId)
+        localPath?.let { deleteFile(it) }
+    }
+
+    private suspend fun deleteFile(path: String) {
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { java.io.File(path).delete() }
+    }
+
+    /**
+     * Applies a control message that [from] sent in the chat with [peer].
+     * People can react to any message in their chat, but only edit or delete
+     * their own, and only within the time limits.
+     */
+    private suspend fun applyControl(from: String, peer: String, c: MessageContent, sentAtMillis: Long) {
+        val ref = c.reaction?.target ?: c.edit?.target ?: c.delete ?: return
+        val target = dao.message(ref.senderId, ref.clientId) ?: return
+        if (target.peerId != peer || target.deleted) return
+        when {
+            c.reaction != null -> setReaction(ref, from, c.reaction.emoji.take(16))
+            c.edit != null -> if (target.senderId == from && target.attachment == null &&
+                sentAtMillis - target.createdAtMillis < EDIT_WINDOW_MS + CLOCK_SLACK_MS
+            ) {
+                dao.applyEdit(target.senderId, target.clientId, c.edit.text.take(MAX_TEXT), sentAtMillis)
+            }
+            c.delete != null -> if (target.senderId == from &&
+                sentAtMillis - target.createdAtMillis < DELETE_WINDOW_MS + CLOCK_SLACK_MS
+            ) {
+                removeContent(target.senderId, target.clientId, target.localPath)
+            }
         }
     }
 
@@ -351,8 +507,15 @@ class ChatRepository(
             }
             try {
                 cryptoLock.withLock {
-                    val content = NovaJson.encodeToString(
-                        MessageContent(text = msg.body.ifEmpty { null }, attachment = attachment),
+                    val content = (
+                        msg.control ?: NovaJson.encodeToString(
+                            MessageContent(
+                                text = msg.body.ifEmpty { null },
+                                attachment = attachment,
+                                replyTo = msg.replyTo?.let { NovaJson.decodeFromString<MessageRef>(it) },
+                                forwarded = msg.forwarded,
+                            ),
+                        )
                     ).toByteArray()
                     envelope = NovaJson.encodeToString(cipher.encrypt(msg.peerId, content))
                     identityKey = cipher.remoteIdentity(msg.peerId)?.b64()
@@ -532,16 +695,21 @@ class ChatRepository(
                 } catch (e: IllegalArgumentException) {
                     null
                 }
-                dao.insertMessage(
-                    if (content == null) {
-                        base.copy(body = "", undecryptable = true)
-                    } else {
+                when {
+                    content == null -> dao.insertMessage(base.copy(body = "", undecryptable = true))
+                    content.isControl -> {
+                        dao.insertMessage(base.copy(body = "", control = NovaJson.encodeToString(content)))
+                        applyControl(dto.senderId, peer, content, base.createdAtMillis)
+                    }
+                    else -> dao.insertMessage(
                         base.copy(
-                            body = content.text.orEmpty(),
+                            body = content.text.orEmpty().take(MAX_TEXT),
                             attachment = content.attachment?.let { NovaJson.encodeToString(it) },
-                        )
-                    },
-                )
+                            replyTo = content.replyTo?.let { NovaJson.encodeToString(it) },
+                            forwarded = content.forwarded,
+                        ),
+                    )
+                }
             }
         }
     }
@@ -591,5 +759,10 @@ class ChatRepository(
         const val SYNC_PAGE = 500
         const val TYPING_MS = 4_000L
         const val OWNER = "owner_user_id"
+        const val EDIT_WINDOW_MS = 15 * 60_000L
+        const val DELETE_WINDOW_MS = 48 * 3_600_000L
+        /** Phones' clocks drift; be lenient when checking someone else's limits. */
+        const val CLOCK_SLACK_MS = 10 * 60_000L
+        const val MAX_TEXT = 65_536
     }
 }
