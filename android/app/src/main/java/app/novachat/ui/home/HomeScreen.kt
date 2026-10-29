@@ -32,6 +32,7 @@ import androidx.compose.ui.unit.dp
 import app.novachat.R
 import app.novachat.ui.chats.ChatsScreen
 import app.novachat.ui.settings.SettingsScreen
+import app.novachat.ui.status.StatusScreen
 
 private data class Tab(val label: String, val icon: @Composable () -> Painter)
 
@@ -50,6 +51,8 @@ fun HomeScreen(
     openStarred: () -> Unit,
     openNewGroup: () -> Unit,
     openJoin: () -> Unit,
+    openStatus: (String) -> Unit,
+    openTextStatus: () -> Unit,
 ) {
     var selected by rememberSaveable { mutableIntStateOf(0) }
     Scaffold(
@@ -73,7 +76,7 @@ fun HomeScreen(
         val modifier = Modifier.padding(padding)
         when (selected) {
             0 -> ChatsScreen(openChat = openChat, openNewGroup = openNewGroup, openJoin = openJoin, modifier = modifier)
-            1 -> ComingSoon("Status", "Share photo, video and text updates that disappear after 24 hours.", modifier)
+            1 -> StatusScreen(openViewer = openStatus, openTextComposer = openTextStatus, modifier = modifier)
             2 -> ComingSoon("Calls", "End-to-end encrypted voice and video calls are next on the roadmap.", modifier)
             else -> SettingsScreen(openProfile = openProfile, openStarred = openStarred, modifier = modifier)
         }

@@ -31,6 +31,8 @@ import app.novachat.ui.chat.ContactInfoScreen
 import app.novachat.ui.home.HomeScreen
 import app.novachat.ui.settings.ProfileScreen
 import app.novachat.ui.settings.StarredScreen
+import app.novachat.ui.status.StatusViewerScreen
+import app.novachat.ui.status.TextStatusScreen
 
 @Composable
 fun appContainer(): AppContainer = (LocalContext.current.applicationContext as NovaChatApp).container
@@ -74,7 +76,19 @@ private fun MainNav(inviteLink: String?, onInviteShown: () -> Unit) {
                 openStarred = { nav.navigate("starred") },
                 openNewGroup = { nav.navigate("newgroup") },
                 openJoin = { joining = "" },
+                openStatus = { authorId -> nav.navigate("status/$authorId") },
+                openTextStatus = { nav.navigate("status-text") },
             )
+        }
+        composable("status/{authorId}", arguments = listOf(navArgument("authorId") { type = NavType.StringType })) { entry ->
+            StatusViewerScreen(
+                authorId = entry.arguments?.getString("authorId").orEmpty(),
+                // Pops only the viewer, even if it asks to close twice.
+                onClose = { nav.popBackStack("status/{authorId}", inclusive = true) },
+            )
+        }
+        composable("status-text") {
+            TextStatusScreen(onDone = { nav.popBackStack() })
         }
         composable("newgroup") {
             NewGroupScreen(onBack = { nav.popBackStack() }, onCreated = { id ->

@@ -207,9 +207,45 @@ data class MessageContent(
     /** Group messages: which group, and the message's ID shared by every member's copy. */
     @SerialName("group_id") val groupId: String? = null,
     @SerialName("group_msg_id") val groupMessageId: String? = null,
+    /** Status updates: a new post, "I saw your post", or "I deleted my post". */
+    val status: StatusPost? = null,
+    @SerialName("status_seen") val statusSeen: String? = null,
+    @SerialName("status_delete") val statusDelete: String? = null,
 ) {
-    val isControl: Boolean get() = reaction != null || edit != null || delete != null
+    val isControl: Boolean
+        get() = reaction != null || edit != null || delete != null ||
+            status != null || statusSeen != null || statusDelete != null
 }
+
+/**
+ * A status update as it travels: encrypted to each viewer like a message.
+ * [background] is an ARGB colour for text posts.
+ */
+@Serializable
+data class StatusPost(
+    val id: String,
+    val text: String? = null,
+    val background: Int? = null,
+    val attachment: Attachment? = null,
+)
+
+/** A status update on this phone, yours or someone else's; gone after 24 hours. */
+data class Status(
+    val id: String,
+    val authorId: String,
+    val text: String,
+    val background: Int?,
+    val attachment: Attachment?,
+    val localPath: String?,
+    val createdAtMillis: Long,
+    val expiresAtMillis: Long,
+    /** You opened it (someone else's post). */
+    val viewed: Boolean,
+    /** Who opened it, with when (your own posts). */
+    val viewers: Map<String, Long>,
+    /** Your own post has gone out to everyone. */
+    val sent: Boolean,
+)
 
 /** Points at one message: messages are unique per sender and client ID. */
 @Serializable
