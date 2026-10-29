@@ -1,16 +1,21 @@
 package app.novachat.data.local
 
 import android.content.Context
+import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Database
 import androidx.room.Entity
 import androidx.room.Index
+import androidx.room.Insert
+import androidx.room.OnConflictStrategy
 import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.Transaction
 import androidx.room.Upsert
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import app.novachat.data.ChatMessage
 import app.novachat.data.User
 import kotlinx.coroutines.flow.Flow
@@ -36,6 +41,12 @@ data class MessageEntity(
     val deliveredAt: String?,
     val readAt: String?,
     val failed: Boolean,
+    /** Outgoing only: the encrypted envelope, kept so a resend is identical. */
+    val envelope: String? = null,
+    /** Outgoing only: the recipient identity key [envelope] was encrypted to. */
+    val envelopeKey: String? = null,
+    /** Incoming message this phone could not decrypt. */
+    @ColumnInfo(defaultValue = "0") val undecryptable: Boolean = false,
 ) {
     fun toChatMessage() = ChatMessage(
         clientId = clientId,
@@ -47,6 +58,7 @@ data class MessageEntity(
         deliveredAt = deliveredAt,
         readAt = readAt,
         failed = failed,
+        undecryptable = undecryptable,
     )
 }
 
@@ -65,6 +77,20 @@ data class UserEntity(
 data class MetaEntity(
     @PrimaryKey val key: String,
     val value: String,
+)
+
+/** End-to-end sessions with one person, sealed with the Keystore key. */
+@Entity(tableName = "crypto_sessions")
+data class SessionEntity(
+    @PrimaryKey val peerId: String,
+    val state: String,
+)
+
+/** A one-time prekey's private half, sealed with the Keystore key. */
+@Entity(tableName = "prekeys")
+data class PreKeyEntity(
+    @PrimaryKey val id: Int,
+    val privateKey: String,
 )
 
 data class UnreadCount(val peerId: String, val unread: Int)
@@ -110,6 +136,20 @@ abstract class ChatDao {
     @Upsert
     abstract suspend fun upsertMessages(messages: List<MessageEntity>)
 
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    abstract suspend fun insertMessage(message: MessageEntity)
+
+    /** Applies the server's copy of a message we already have, keeping our text. */
+    @Query(
+        """UPDATE messages SET id = :id, deliveredAt = COALESCE(deliveredAt, :deliveredAt),
+           readAt = COALESCE(readAt, :readAt), failed = 0
+           WHERE senderId = :senderId AND clientId = :clientId""",
+    )
+    abstract suspend fun applyServerCopy(senderId: String, clientId: String, id: Long, deliveredAt: String?, readAt: String?)
+
+    @Query("UPDATE messages SET envelope = :envelope, envelopeKey = :envelopeKey WHERE senderId = :senderId AND clientId = :clientId")
+    abstract suspend fun setEnvelope(senderId: String, clientId: String, envelope: String?, envelopeKey: String?)
+
     @Query("UPDATE messages SET failed = :failed WHERE senderId = :senderId AND clientId = :clientId")
     abstract suspend fun setFailed(senderId: String, clientId: String, failed: Boolean)
 
@@ -137,6 +177,33 @@ abstract class ChatDao {
     @Upsert
     abstract suspend fun putMeta(meta: MetaEntity)
 
+    @Query("SELECT state FROM crypto_sessions WHERE peerId = :peerId")
+    abstract suspend fun session(peerId: String): String?
+
+    @Upsert
+    abstract suspend fun putSession(session: SessionEntity)
+
+    @Query("DELETE FROM crypto_sessions WHERE peerId = :peerId")
+    abstract suspend fun deleteSession(peerId: String)
+
+    @Query("SELECT privateKey FROM prekeys WHERE id = :id")
+    abstract suspend fun preKey(id: Int): String?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    abstract suspend fun insertPreKeys(keys: List<PreKeyEntity>)
+
+    @Query("DELETE FROM prekeys WHERE id = :id")
+    abstract suspend fun deletePreKey(id: Int)
+
+    @Query("DELETE FROM meta WHERE `key` = :key")
+    abstract suspend fun deleteMetaKey(key: String)
+
+    @Query("DELETE FROM crypto_sessions")
+    abstract suspend fun deleteSessions()
+
+    @Query("DELETE FROM prekeys")
+    abstract suspend fun deletePreKeys()
+
     @Query("DELETE FROM messages")
     abstract suspend fun deleteMessages()
 
@@ -152,24 +219,40 @@ abstract class ChatDao {
         deleteMessages()
         deleteUsers()
         deleteMeta()
+        deleteSessions()
+        deletePreKeys()
     }
 }
 
 /**
  * Chats kept on the phone so they open instantly and work offline.
  *
- * The server still holds every message in this slice, so an upgrade that
- * changes the schema simply rebuilds the database and syncs it again. Real
- * migrations (and SQLCipher encryption) arrive with end-to-end encryption.
+ * Since end-to-end encryption, decrypted messages and keys exist only here,
+ * so every schema change needs a migration that keeps the data.
  */
-@Database(entities = [MessageEntity::class, UserEntity::class, MetaEntity::class], version = 1, exportSchema = false)
+@Database(
+    entities = [MessageEntity::class, UserEntity::class, MetaEntity::class, SessionEntity::class, PreKeyEntity::class],
+    version = 2,
+    exportSchema = false,
+)
 abstract class ChatDatabase : RoomDatabase() {
     abstract fun chats(): ChatDao
 
     companion object {
+        /** 1 -> 2: end-to-end encryption (envelopes, sessions, prekeys). */
+        private val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `messages` ADD COLUMN `envelope` TEXT")
+                db.execSQL("ALTER TABLE `messages` ADD COLUMN `envelopeKey` TEXT")
+                db.execSQL("ALTER TABLE `messages` ADD COLUMN `undecryptable` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("CREATE TABLE IF NOT EXISTS `crypto_sessions` (`peerId` TEXT NOT NULL, `state` TEXT NOT NULL, PRIMARY KEY(`peerId`))")
+                db.execSQL("CREATE TABLE IF NOT EXISTS `prekeys` (`id` INTEGER NOT NULL, `privateKey` TEXT NOT NULL, PRIMARY KEY(`id`))")
+            }
+        }
+
         fun open(context: Context): ChatDatabase =
             Room.databaseBuilder(context, ChatDatabase::class.java, "novachat.db")
-                .fallbackToDestructiveMigration()
+                .addMigrations(MIGRATION_1_2)
                 .build()
     }
 }

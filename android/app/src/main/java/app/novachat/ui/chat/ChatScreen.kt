@@ -1,6 +1,14 @@
 package app.novachat.ui.chat
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.height
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -82,6 +90,10 @@ fun ChatScreen(peerId: String, onBack: () -> Unit) {
     }
 
     var draft by rememberSaveable { mutableStateOf("") }
+    var showSafety by remember { mutableStateOf(false) }
+    if (showSafety) {
+        SafetyNumberDialog(peerName = peer?.displayName ?: "them", load = { repo.safetyNumber(peerId) }, onDismiss = { showSafety = false })
+    }
     var lastTypingSent by remember { mutableLongStateOf(0L) }
 
     Scaffold(
@@ -129,6 +141,8 @@ fun ChatScreen(peerId: String, onBack: () -> Unit) {
                 items(messages.asReversed(), key = { it.senderId + it.clientId }) { m ->
                     Bubble(m, mine = m.senderId == myId, onRetry = { repo.retry(m.clientId) })
                 }
+                // reverseLayout: the last item sits above the oldest message.
+                item(key = "e2e-notice") { EncryptionNotice(onClick = { showSafety = true }) }
             }
             MessageComposer(
                 text = draft,
@@ -171,7 +185,16 @@ private fun Bubble(m: ChatMessage, mine: Boolean, onRetry: () -> Unit) {
                 .then(if (m.status == DeliveryStatus.Failed) Modifier.clickable(onClick = onRetry) else Modifier),
         ) {
             Column(Modifier.padding(start = 14.dp, end = 12.dp, top = 8.dp, bottom = 6.dp)) {
-                Text(m.body, color = fg, style = MaterialTheme.typography.bodyLarge)
+                if (m.undecryptable) {
+                    Text(
+                        "This message couldn't be decrypted on this phone",
+                        color = fg.copy(alpha = 0.75f),
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontStyle = FontStyle.Italic,
+                    )
+                } else {
+                    Text(m.body, color = fg, style = MaterialTheme.typography.bodyLarge)
+                }
                 Row(
                     Modifier.align(Alignment.End),
                     verticalAlignment = Alignment.CenterVertically,
@@ -223,4 +246,67 @@ private fun MessageComposer(text: String, onText: (String) -> Unit, onSend: () -
             Icon(Icons.AutoMirrored.Filled.Send, "Send")
         }
     }
+}
+
+@Composable
+private fun EncryptionNotice(onClick: () -> Unit) {
+    Box(Modifier.fillMaxWidth().padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
+        Surface(
+            onClick = onClick,
+            shape = RoundedCornerShape(16.dp),
+            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f),
+            modifier = Modifier.widthIn(max = 320.dp),
+        ) {
+            Row(Modifier.padding(horizontal = 14.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Filled.Lock, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    "Messages here are end-to-end encrypted. Only the two of you can read them, not even NovaChat. Tap to verify.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    textAlign = TextAlign.Center,
+                )
+            }
+        }
+    }
+}
+
+/** Shows the safety number in 12 groups of 5 digits, like a short code to read aloud. */
+@Composable
+private fun SafetyNumberDialog(peerName: String, load: suspend () -> String?, onDismiss: () -> Unit) {
+    var number by remember { mutableStateOf<String?>(null) }
+    var loaded by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        number = load()
+        loaded = true
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Filled.Lock, null, tint = MaterialTheme.colorScheme.primary) },
+        title = { Text("Verify encryption") },
+        text = {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                val n = number
+                when {
+                    !loaded -> CircularProgressIndicator(Modifier.size(28.dp))
+                    n == null -> Text("Send or receive a message first. Encryption keys are set up with the first message.")
+                    else -> {
+                        Text(
+                            n.chunked(5).chunked(4).joinToString("\n") { it.joinToString("   ") },
+                            fontFamily = FontFamily.Monospace,
+                            style = MaterialTheme.typography.titleMedium,
+                            textAlign = TextAlign.Center,
+                        )
+                        Spacer(Modifier.height(16.dp))
+                        Text(
+                            "Compare these numbers with $peerName, in person or on a call. If they match, your chat is private.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
+    )
 }

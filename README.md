@@ -171,6 +171,36 @@ the plans in Render when you need it always on.
   next step replaces Redis pub/sub with NATS JetStream and moves message
   storage to ScyllaDB.
 
+### End-to-end encryption
+
+Every message is encrypted on the sender's phone and decrypted on the
+recipient's phone, using the same design as Signal (and WhatsApp):
+
+* **Keys** (`android/.../crypto`): each install creates an identity key pair
+  (X25519 for key agreement, Ed25519 for signing), a signed prekey that is
+  replaced weekly, and batches of 100 one-time prekeys. Private keys never
+  leave the phone; they are stored in the chat database sealed with an AES key
+  held in the Android Keystore (`data/Vault.kt`).
+* **Key directory** (`server/internal/keys`): phones publish public keys with
+  `PUT /v1/keys`; `GET /v1/keys/{user}` hands out one bundle and deletes the
+  one-time prekey it used. The server checks the prekey signature.
+* **Sessions**: the first message runs X3DH to agree on a secret, then a Double
+  Ratchet session gives every message its own key (forward secrecy) and heals
+  after a key leak (post-compromise security). Lost, delayed and reordered
+  messages still decrypt; tampered ones are rejected.
+* **What the server sees**: who talks to whom and when, plus an opaque
+  `envelope`. It cannot read message text.
+* **Verify**: tap the lock notice at the top of a chat to see the 60-digit
+  safety number. If it matches on both phones, nobody is intercepting.
+* **One phone per account**: like WhatsApp, signing in on a new phone
+  publishes new keys and signs the old phone out. Messages sent to the old
+  keys cannot be read on the new phone. The sender's app notices the key change
+  (`stale_identity`), sets up a new session and resends automatically.
+
+The crypto core has unit tests (`android/app/src/test`): two simulated phones,
+lost and shuffled messages, tampering, replay, both people starting at once,
+and a forged prekey.
+
 ### API
 
 | Method and path | Auth | Purpose |
@@ -184,6 +214,8 @@ the plans in Render when you need it always on.
 | `GET /v1/conversations` | Bearer | Chats with last message and unread count |
 | `GET /v1/messages?peer=&before=&limit=` | Bearer | Older messages in one chat |
 | `GET /v1/sync?after=&limit=` | Bearer | Everything since a message id |
+| `PUT /v1/keys` | Bearer | Publish identity, signed prekey and one-time prekeys |
+| `GET /v1/keys/{id}` | Bearer | Claim someone's prekey bundle to start encryption |
 | `GET /v1/ws` | Bearer | Realtime WebSocket |
 
 ### WebSocket frames (JSON)
@@ -191,7 +223,7 @@ the plans in Render when you need it always on.
 App to server:
 
 ```json
-{"type": "send", "client_id": "<uuid>", "to": "<user id>", "body": "Hello"}
+{"type": "send", "client_id": "<uuid>", "to": "<user id>", "envelope": "<encrypted>", "identity_key": "<their identity key, base64>"}
 {"type": "receipt", "status": "delivered", "message_ids": [42, 43]}
 {"type": "receipt", "status": "read", "message_ids": [42, 43]}
 {"type": "typing", "to": "<user id>"}
@@ -234,9 +266,8 @@ Following the builder guide, in order:
    the phone, so they open instantly, work offline and survive restarts. Only
    new messages are fetched after a reconnect. SQLCipher encryption of that
    database and a Keystore-protected session token come with step 2.
-2. **End-to-end encryption**: per-device keys, a key directory on the server,
-   and Double Ratchet sessions (vodozemac via a small Rust crate, or
-   libsignal). Message bodies on the server become opaque ciphertext.
+2. ~~**End-to-end encryption**~~ (done in 0.3.0): see
+   [End-to-end encryption](#end-to-end-encryption) below.
 3. **Push notifications** with Firebase Cloud Messaging for offline phones.
 4. **Media**: photos, video, voice notes and documents, encrypted on the
    phone and uploaded to S3-compatible storage (MinIO locally).

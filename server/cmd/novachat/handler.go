@@ -10,6 +10,7 @@ import (
 	"github.com/mahmudultopu/novachat/server/internal/auth"
 	"github.com/mahmudultopu/novachat/server/internal/chat"
 	"github.com/mahmudultopu/novachat/server/internal/config"
+	"github.com/mahmudultopu/novachat/server/internal/keys"
 )
 
 // NewHandler wires every route. It returns a function that stops the hub.
@@ -20,13 +21,16 @@ func NewHandler(ctx context.Context, cfg config.Config, pool *pgxpool.Pool, rdb 
 	}
 	authH := &auth.Handlers{Store: &auth.Store{DB: pool}, OTP: otp}
 	hub := chat.NewHub(ctx, rdb)
-	chatH := &chat.Handlers{Store: &chat.Store{DB: pool}, Hub: hub, Auth: authH}
+	keyStore := &keys.Store{DB: pool}
+	keysH := &keys.Handlers{Store: keyStore, Auth: authH}
+	chatH := &chat.Handlers{Store: &chat.Store{DB: pool}, Hub: hub, Auth: authH, Keys: keyStore}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("ok"))
 	})
 	authH.Register(mux)
+	keysH.Register(mux)
 	chatH.Register(mux)
 	return mux, func() { hub.Close() }
 }

@@ -1,6 +1,13 @@
 package app.novachat.data
 
-import app.novachat.data.local.ChatDao
+import androidx.room.withTransaction
+import app.novachat.crypto.CryptoException
+import app.novachat.crypto.Envelope
+import app.novachat.crypto.PreKeyBundle
+import app.novachat.crypto.SessionCipher
+import app.novachat.crypto.b64
+import app.novachat.crypto.unb64
+import app.novachat.data.local.ChatDatabase
 import app.novachat.data.local.MessageEntity
 import app.novachat.data.local.MetaEntity
 import app.novachat.data.local.UserEntity
@@ -22,6 +29,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -34,17 +42,25 @@ import java.util.UUID
  * the server: catches up through /v1/sync after every (re)connect, applies
  * live frames, and resends messages that were typed while offline. The UI
  * reads straight from the database, so chats open instantly, even offline.
+ *
+ * Every message is end-to-end encrypted here before it leaves the phone and
+ * decrypted here when it arrives; the server only relays envelopes.
  */
 class ChatRepository(
     private val api: ApiClient,
     private val socket: ChatSocket,
-    private val dao: ChatDao,
+    private val db: ChatDatabase,
+    private val keys: E2eKeys,
     private val scope: CoroutineScope,
 ) {
+    private val dao = db.chats()
+    private val cipher = SessionCipher(keys)
     private var session: Session? = null
     private var jobs = emptyList<Job>()
     /** Serialises database writes that read-modify-write, such as sync. */
     private val writeLock = Mutex()
+    /** Ratchet sessions must advance one message at a time. */
+    private val cryptoLock = Mutex()
 
     /** Who is typing to us right now, with when their indicator expires. */
     private val typing = MutableStateFlow<Map<String, Long>>(emptyMap())
@@ -94,6 +110,7 @@ class ChatRepository(
                 writeLock.withLock {
                     if (dao.meta(OWNER) != newSession.user.id) {
                         dao.clear()
+                        keys.reset()
                         dao.putMeta(MetaEntity(OWNER, newSession.user.id))
                     }
                 }
@@ -112,7 +129,7 @@ class ChatRepository(
         if (session?.token == s.token) socket.connect(s.serverUrl, s.token)
     }
 
-    /** Disconnects. [clearData] also wipes the chats stored on this phone (log out). */
+    /** Disconnects. [clearData] also wipes the chats and keys stored on this phone (log out). */
     @Synchronized
     fun stop(clearData: Boolean) {
         jobs.forEach { it.cancel() }
@@ -121,7 +138,14 @@ class ChatRepository(
         session = null
         myId.value = null
         typing.value = emptyMap()
-        if (clearData) scope.launch { writeLock.withLock { dao.clear() } }
+        if (clearData) {
+            scope.launch {
+                writeLock.withLock {
+                    dao.clear()
+                    keys.reset()
+                }
+            }
+        }
     }
 
     /** Finds a NovaChat user by phone number and remembers them. */
@@ -148,7 +172,7 @@ class ChatRepository(
         )
         scope.launch {
             dao.upsertMessages(listOf(msg))
-            transmit(msg)
+            deliver(msg)
         }
     }
 
@@ -157,7 +181,7 @@ class ChatRepository(
         scope.launch {
             val msg = dao.message(me, clientId) ?: return@launch
             dao.setFailed(me, clientId, false)
-            transmit(msg)
+            deliver(msg)
         }
     }
 
@@ -171,6 +195,17 @@ class ChatRepository(
         if (peerId != null) scope.launch { markRead(peerId) }
     }
 
+    /**
+     * The 60-digit number both people see for their chat. If it matches on
+     * both phones, nobody is intercepting the encryption. Null until the
+     * first message has set up encryption with this person.
+     */
+    suspend fun safetyNumber(peerId: String): String? {
+        val me = session?.user ?: return null
+        val theirs = cipher.remoteIdentity(peerId) ?: return null
+        return SessionCipher.safetyNumber(me.id, keys.identity().dh.publicKey, peerId, theirs)
+    }
+
     private suspend fun markRead(peerId: String) {
         val me = session?.user?.id ?: return
         val unread = dao.unreadIds(peerId, me)
@@ -179,13 +214,53 @@ class ChatRepository(
         }
     }
 
-    private fun transmit(msg: MessageEntity) {
+    /**
+     * Encrypts a message (once: the envelope is saved so resends are
+     * identical) and hands it to the socket. Without a connection it stays
+     * pending and goes out after the next reconnect.
+     */
+    private suspend fun deliver(msg: MessageEntity) {
+        val s = session ?: return
+        var envelope = msg.envelope
+        var identityKey = msg.envelopeKey
+        if (envelope == null || identityKey == null) {
+            if (!cipher.hasSession(msg.peerId)) {
+                val bundle = try {
+                    api.keyBundle(s, msg.peerId)
+                } catch (e: ApiException) {
+                    // 404: they have not opened an encrypting version of NovaChat yet.
+                    if (e.status != 0) dao.setFailed(msg.senderId, msg.clientId, true)
+                    return
+                }
+                try {
+                    cryptoLock.withLock {
+                        if (!cipher.hasSession(msg.peerId)) cipher.startSession(msg.peerId, bundle.toPreKeyBundle())
+                    }
+                } catch (e: CryptoException) {
+                    // A bad signature on their prekey: never send to keys we cannot trust.
+                    dao.setFailed(msg.senderId, msg.clientId, true)
+                    return
+                }
+            }
+            try {
+                cryptoLock.withLock {
+                    val content = NovaJson.encodeToString(MessageContent(text = msg.body)).toByteArray()
+                    envelope = NovaJson.encodeToString(cipher.encrypt(msg.peerId, content))
+                    identityKey = cipher.remoteIdentity(msg.peerId)?.b64()
+                    dao.setEnvelope(msg.senderId, msg.clientId, envelope, identityKey)
+                }
+            } catch (e: CryptoException) {
+                dao.setFailed(msg.senderId, msg.clientId, true)
+                return
+            }
+        }
         socket.send(
             buildJsonObject {
                 put("type", "send")
                 put("client_id", msg.clientId)
                 put("to", msg.recipientId)
-                put("body", msg.body)
+                put("envelope", envelope)
+                put("identity_key", identityKey)
             }.toString(),
         )
     }
@@ -213,14 +288,36 @@ class ChatRepository(
             "error" -> {
                 val me = session?.user?.id
                 val cid = frame.clientId
-                if (me != null && cid != null) dao.setFailed(me, cid, true)
+                if (me != null && cid != null) onSendError(me, cid, frame.code)
             }
         }
     }
 
-    /** Pulls everything since the newest stored message, then resends pending ones. */
+    private suspend fun onSendError(me: String, clientId: String, code: String?) {
+        val msg = dao.message(me, clientId) ?: return
+        if (code == "stale_identity" && msg.envelope != null) {
+            // They reinstalled or moved to a new phone: start a fresh session
+            // with their new keys and encrypt the message again.
+            cryptoLock.withLock { keys.forgetSessions(msg.peerId) }
+            dao.setEnvelope(me, clientId, null, null)
+            scope.launch { deliver(msg.copy(envelope = null, envelopeKey = null)) }
+        } else {
+            dao.setFailed(me, clientId, true)
+        }
+    }
+
+    /** Publishes keys, pulls everything since the newest stored message, then resends pending ones. */
     private suspend fun catchUp() {
         val s = session ?: return
+        try {
+            keys.publish(api, s)
+        } catch (e: ApiException) {
+            if (e.status == 401) {
+                _unauthorized.tryEmit(Unit)
+                return
+            }
+            // Keys go up on the next reconnect; receiving still works meanwhile.
+        }
         try {
             while (true) {
                 val page = api.sync(s, dao.lastSeq() ?: 0L, SYNC_PAGE)
@@ -231,7 +328,7 @@ class ChatRepository(
             if (e.status == 401) _unauthorized.tryEmit(Unit)
             return
         }
-        dao.pending(s.user.id).forEach(::transmit)
+        dao.pending(s.user.id).forEach { deliver(it) }
     }
 
     private suspend fun applyMessages(dtos: List<MessageDto>) {
@@ -239,7 +336,7 @@ class ChatRepository(
         val me = s.user.id
         if (dtos.isEmpty()) return
         writeLock.withLock {
-            dao.upsertMessages(dtos.map { it.toEntity(me) })
+            for (dto in dtos) store(dto, me)
         }
 
         // Tell senders their messages reached this phone, and mark the open chat read.
@@ -252,18 +349,58 @@ class ChatRepository(
         }
     }
 
+    /**
+     * Saves one message from the server. A message we already have only gets
+     * its server fields updated. A new one is decrypted, and the ratchet step
+     * and the message are saved in one transaction, so a crash cannot lose a
+     * message whose key was already used up.
+     */
+    private suspend fun store(dto: MessageDto, me: String) {
+        if (dao.message(dto.senderId, dto.clientId) != null) {
+            dao.applyServerCopy(dto.senderId, dto.clientId, dto.id, dto.deliveredAt, dto.readAt)
+            return
+        }
+        val peer = if (dto.senderId == me) dto.recipientId else dto.senderId
+        val base = dto.toEntity(peer)
+        val envelope = dto.envelope
+        if (envelope == null) {
+            dao.insertMessage(base) // sent before encryption existed
+            return
+        }
+        if (dto.senderId == me) {
+            // Our own message from an earlier install: its keys are gone.
+            dao.insertMessage(base.copy(body = "", undecryptable = true))
+            return
+        }
+        cryptoLock.withLock {
+            db.withTransaction {
+                val text = try {
+                    val decrypted = cipher.decrypt(peer, NovaJson.decodeFromString<Envelope>(envelope))
+                    NovaJson.decodeFromString<MessageContent>(String(decrypted.plaintext)).text.orEmpty()
+                } catch (e: CryptoException) {
+                    null
+                } catch (e: kotlinx.serialization.SerializationException) {
+                    null
+                } catch (e: IllegalArgumentException) {
+                    null
+                }
+                dao.insertMessage(if (text == null) base.copy(body = "", undecryptable = true) else base.copy(body = text))
+            }
+        }
+    }
+
     private suspend fun applyReceipt(frame: ServerFrame) {
         if (frame.messageIds.isEmpty()) return
         val at = frame.at ?: OffsetDateTime.now().toString()
         if (frame.status == "read") dao.markRead(frame.messageIds, at) else dao.markDelivered(frame.messageIds, at)
     }
 
-    private fun MessageDto.toEntity(me: String) = MessageEntity(
+    private fun MessageDto.toEntity(peer: String) = MessageEntity(
         senderId = senderId,
         clientId = clientId,
         id = id,
         recipientId = recipientId,
-        peerId = if (senderId == me) recipientId else senderId,
+        peerId = peer,
         body = body,
         createdAtMillis = runCatching { OffsetDateTime.parse(createdAt).toInstant().toEpochMilli() }
             .getOrDefault(System.currentTimeMillis()),
@@ -272,13 +409,24 @@ class ChatRepository(
         failed = false,
     )
 
+    private fun KeyBundleDto.toPreKeyBundle() = PreKeyBundle(
+        identityKey = identityKey.unb64(),
+        signingKey = signingKey.unb64(),
+        signedPreKeyId = signedPreKey.id,
+        signedPreKey = signedPreKey.publicKey.unb64(),
+        signedPreKeySignature = signedPreKey.signature.unb64(),
+        oneTimePreKeyId = oneTimePreKey?.id,
+        oneTimePreKey = oneTimePreKey?.publicKey?.unb64(),
+    )
+
     private fun User.toEntity() = UserEntity(id = id, phone = phone, name = name, about = about)
 
     @OptIn(ExperimentalCoroutinesApi::class)
     private fun Flow<String?>.flatMapUnread(): Flow<Map<String, Int>> = flatMapLatest { me ->
         if (me == null) {
             flowOf(emptyMap())
-        } else { dao.unreadCounts(me).map { list -> list.associate { it.peerId to it.unread } }
+        } else {
+            dao.unreadCounts(me).map { list -> list.associate { it.peerId to it.unread } }
         }
     }
 

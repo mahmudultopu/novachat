@@ -8,12 +8,14 @@ import (
 
 	"github.com/mahmudultopu/novachat/server/internal/auth"
 	"github.com/mahmudultopu/novachat/server/internal/httpx"
+	"github.com/mahmudultopu/novachat/server/internal/keys"
 )
 
 type Handlers struct {
 	Store *Store
 	Hub   *Hub
 	Auth  *auth.Handlers
+	Keys  *keys.Store
 }
 
 func (h *Handlers) Register(mux *http.ServeMux) {
