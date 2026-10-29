@@ -5,6 +5,7 @@ import app.novachat.data.ApiClient
 import app.novachat.data.ChatRepository
 import app.novachat.data.ChatSocket
 import app.novachat.data.E2eKeys
+import app.novachat.data.MediaFiles
 import app.novachat.data.Session
 import app.novachat.data.SessionStore
 import app.novachat.data.Vault
@@ -50,7 +51,7 @@ class AppContainer(app: Application) {
     val sessionStore = SessionStore(app)
     val api = ApiClient(http)
     val database = ChatDatabase.open(app)
-    val chats = ChatRepository(api, ChatSocket(http, scope), database, E2eKeys(database.chats(), Vault()), scope)
+    val chats = ChatRepository(api, ChatSocket(http, scope), database, E2eKeys(database.chats(), Vault()), MediaFiles(app), scope)
 
     val session: StateFlow<SessionState> = sessionStore.session
         .map { if (it == null) SessionState.SignedOut else SessionState.SignedIn(it) }

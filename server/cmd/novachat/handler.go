@@ -11,6 +11,7 @@ import (
 	"github.com/mahmudultopu/novachat/server/internal/chat"
 	"github.com/mahmudultopu/novachat/server/internal/config"
 	"github.com/mahmudultopu/novachat/server/internal/keys"
+	"github.com/mahmudultopu/novachat/server/internal/media"
 )
 
 // NewHandler wires every route. It returns a function that stops the hub.
@@ -30,6 +31,9 @@ func NewHandler(ctx context.Context, cfg config.Config, pool *pgxpool.Pool, rdb 
 		w.Write([]byte("ok"))
 	})
 	authH.Register(mux)
+	mediaStore := &media.Store{DB: pool}
+	go mediaStore.RunCleanup(ctx)
+	(&media.Handlers{Store: mediaStore, Auth: authH}).Register(mux)
 	keysH.Register(mux)
 	chatH.Register(mux)
 	return mux, func() { hub.Close() }

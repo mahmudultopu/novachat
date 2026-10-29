@@ -16,7 +16,9 @@ import androidx.room.Transaction
 import androidx.room.Upsert
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
+import app.novachat.data.Attachment
 import app.novachat.data.ChatMessage
+import app.novachat.data.NovaJson
 import app.novachat.data.User
 import kotlinx.coroutines.flow.Flow
 
@@ -47,6 +49,10 @@ data class MessageEntity(
     val envelopeKey: String? = null,
     /** Incoming message this phone could not decrypt. */
     @ColumnInfo(defaultValue = "0") val undecryptable: Boolean = false,
+    /** [Attachment] as JSON, including its key: only on this phone and inside envelopes. */
+    val attachment: String? = null,
+    /** Path of the decrypted file in the app's private storage. */
+    val localPath: String? = null,
 ) {
     fun toChatMessage() = ChatMessage(
         clientId = clientId,
@@ -59,6 +65,8 @@ data class MessageEntity(
         readAt = readAt,
         failed = failed,
         undecryptable = undecryptable,
+        attachment = attachment?.let { runCatching { NovaJson.decodeFromString<Attachment>(it) }.getOrNull() },
+        localPath = localPath,
     )
 }
 
@@ -150,6 +158,15 @@ abstract class ChatDao {
     @Query("UPDATE messages SET envelope = :envelope, envelopeKey = :envelopeKey WHERE senderId = :senderId AND clientId = :clientId")
     abstract suspend fun setEnvelope(senderId: String, clientId: String, envelope: String?, envelopeKey: String?)
 
+    @Query("UPDATE messages SET attachment = :attachment WHERE senderId = :senderId AND clientId = :clientId")
+    abstract suspend fun setAttachment(senderId: String, clientId: String, attachment: String)
+
+    @Query("UPDATE messages SET localPath = :path WHERE senderId = :senderId AND clientId = :clientId")
+    abstract suspend fun setLocalPath(senderId: String, clientId: String, path: String)
+
+    @Query("SELECT localPath FROM messages WHERE localPath IS NOT NULL")
+    abstract suspend fun localPaths(): List<String>
+
     @Query("UPDATE messages SET failed = :failed WHERE senderId = :senderId AND clientId = :clientId")
     abstract suspend fun setFailed(senderId: String, clientId: String, failed: Boolean)
 
@@ -232,7 +249,7 @@ abstract class ChatDao {
  */
 @Database(
     entities = [MessageEntity::class, UserEntity::class, MetaEntity::class, SessionEntity::class, PreKeyEntity::class],
-    version = 2,
+    version = 3,
     exportSchema = false,
 )
 abstract class ChatDatabase : RoomDatabase() {
@@ -250,9 +267,17 @@ abstract class ChatDatabase : RoomDatabase() {
             }
         }
 
+        /** 2 -> 3: photos, videos, voice notes and documents. */
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `messages` ADD COLUMN `attachment` TEXT")
+                db.execSQL("ALTER TABLE `messages` ADD COLUMN `localPath` TEXT")
+            }
+        }
+
         fun open(context: Context): ChatDatabase =
             Room.databaseBuilder(context, ChatDatabase::class.java, "novachat.db")
-                .addMigrations(MIGRATION_1_2)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                 .build()
     }
 }
