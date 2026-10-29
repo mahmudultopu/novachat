@@ -83,6 +83,14 @@ class ChatRepository(
     private val typing = MutableStateFlow<Map<String, Long>>(emptyMap())
     private var openPeer: String? = null
 
+    private val _incoming = MutableSharedFlow<IncomingNotice>(extraBufferCapacity = 64)
+    /** New messages from other people, for notifications. */
+    val incoming: SharedFlow<IncomingNotice> = _incoming
+
+    /** Whether the app is on screen; the server shows us online only then. */
+    @Volatile
+    private var appActive = true
+
     private val _unauthorized = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     val unauthorized: SharedFlow<Unit> = _unauthorized
 
@@ -585,6 +593,35 @@ class ChatRepository(
         }
     }
 
+    private suspend fun notice(m: MessageEntity) {
+        val sender = dao.userNow(m.senderId)?.toUser()
+        val senderName = sender?.displayName ?: "Someone"
+        val group = m.groupId?.let { dao.groupNow(it) }
+        val a = m.attachment?.let { runCatching { NovaJson.decodeFromString<Attachment>(it) }.getOrNull() }
+        val text = when {
+            m.undecryptable -> "New message"
+            a == null -> m.body
+            else -> when (a.kind) {
+                AttachmentKind.image -> "📷 Photo"
+                AttachmentKind.video -> "🎥 Video"
+                AttachmentKind.voice -> "🎤 Voice message"
+                AttachmentKind.file -> "📄 " + (a.name ?: "Document")
+            } + if (m.body.isNotBlank()) " · " + m.body else ""
+        }
+        _incoming.tryEmit(
+            IncomingNotice(
+                chatId = m.peerId,
+                title = group?.name ?: senderName,
+                isGroup = group != null,
+                senderId = m.senderId,
+                senderName = senderName,
+                senderAvatarId = sender?.avatarId,
+                text = text,
+                atMillis = m.createdAtMillis,
+            ),
+        )
+    }
+
     /** Applies a status post, view or delete. Returns false for other control messages. */
     private suspend fun applyStatusControl(from: String, c: MessageContent, sentAtMillis: Long): Boolean {
         val me = session?.user?.id ?: return true
@@ -656,6 +693,26 @@ class ChatRepository(
             dao.setFailed(me, clientId, false)
             if (msg.groupId != null && msg.control == null) deliverGroup(msg) else deliver(msg)
         }
+    }
+
+    /** Call when the app comes on screen or goes to the background. */
+    fun setActive(active: Boolean) {
+        appActive = active
+        sendActive()
+        // Back on an open chat: what arrived meanwhile is read now.
+        if (active) openPeer?.let { markChatRead(it) }
+    }
+
+    private fun sendActive() {
+        socket.send(buildJsonObject { put("type", "active"); put("active", appActive) }.toString())
+    }
+
+    /** True while this chat is open on screen, so it needs no notification. */
+    fun isOnScreen(peerId: String): Boolean = appActive && openPeer == peerId
+
+    /** Marks a chat read, e.g. from a notification. */
+    fun markChatRead(peerId: String) {
+        scope.launch { markRead(peerId) }
     }
 
     fun sendTyping(peerId: String) {
@@ -972,6 +1029,7 @@ class ChatRepository(
     private suspend fun onFrame(frame: ServerFrame) {
         when (frame.type) {
             "ready" -> {
+                if (!appActive) sendActive()
                 openPeer?.let(::queryPresence)
                 catchUp()
             }
@@ -1047,19 +1105,27 @@ class ChatRepository(
         val me = s.user.id
         if (dtos.isEmpty()) return
         val changedGroups = mutableSetOf<String>()
+        val fresh = mutableListOf<Long>()
+        // A brand-new install catching up on history does not notify.
+        val catchingUpHistory = dao.lastSeq() == null
         writeLock.withLock {
-            for (dto in dtos) store(dto, me)?.let { changedGroups += it }
+            for (dto in dtos) {
+                val isNew = dto.senderId != me && !dao.hasId(dto.id)
+                store(dto, me)?.let { changedGroups += it }
+                if (isNew) fresh += dto.id
+            }
         }
         changedGroups.forEach { refreshGroup(it) }
 
         // Tell senders their messages reached this phone, and mark the open chat read.
         sendReceipt("delivered", dtos.filter { it.recipientId == me && it.senderId != me && it.deliveredAt == null }.map { it.id })
-        openPeer?.let { markRead(it) }
+        if (appActive) openPeer?.let { markRead(it) }
 
         val unknown = dtos.flatMap { listOf(it.senderId, it.recipientId) }.toSet() - dao.userIds().toSet() - me
         for (id in unknown) {
             runCatching { api.user(s, id) }.getOrNull()?.let { dao.upsertUser(it.toEntity()) }
         }
+        if (!catchingUpHistory) fresh.forEach { id -> dao.incomingById(id, me)?.let { notice(it) } }
     }
 
     /**

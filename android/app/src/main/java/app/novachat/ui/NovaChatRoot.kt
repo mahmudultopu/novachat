@@ -4,6 +4,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.Composable
+import android.Manifest
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -38,7 +42,12 @@ import app.novachat.ui.status.TextStatusScreen
 fun appContainer(): AppContainer = (LocalContext.current.applicationContext as NovaChatApp).container
 
 @Composable
-fun NovaChatRoot(inviteLink: String? = null, onInviteShown: () -> Unit = {}) {
+fun NovaChatRoot(
+    inviteLink: String? = null,
+    onInviteShown: () -> Unit = {},
+    chatToOpen: String? = null,
+    onChatOpened: () -> Unit = {},
+) {
     val container = appContainer()
     val state by container.session.collectAsStateWithLifecycle()
     when (val s = state) {
@@ -47,13 +56,25 @@ fun NovaChatRoot(inviteLink: String? = null, onInviteShown: () -> Unit = {}) {
         }
         SessionState.SignedOut -> AuthFlow()
         is SessionState.SignedIn ->
-            if (s.session.user.name.isBlank()) ProfileSetupScreen(s.session) else MainNav(inviteLink, onInviteShown)
+            if (s.session.user.name.isBlank()) ProfileSetupScreen(s.session) else MainNav(inviteLink, onInviteShown, chatToOpen, onChatOpened)
     }
 }
 
 @Composable
-private fun MainNav(inviteLink: String?, onInviteShown: () -> Unit) {
+private fun MainNav(inviteLink: String?, onInviteShown: () -> Unit, chatToOpen: String?, onChatOpened: () -> Unit) {
     val nav = rememberNavController()
+    // Opened from a notification: go straight to that chat.
+    LaunchedEffect(chatToOpen) {
+        if (chatToOpen != null) {
+            nav.navigate("chat/$chatToOpen") { popUpTo("home") }
+            onChatOpened()
+        }
+    }
+    // Android 13+ asks before an app may show notifications.
+    val askNotifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= 33) askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+    }
     // The join dialog: opened from the menu ("") or by an invite link.
     var joining by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(inviteLink) {

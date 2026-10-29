@@ -121,6 +121,7 @@ fun ChatScreen(peerId: String, onBack: () -> Unit, openInfo: (isGroup: Boolean) 
     // Incoming messages are marked read only while this chat is on screen.
     DisposableEffect(peerId) {
         repo.setOpenChat(peerId)
+        container.notifier.clear(peerId)
         onDispose { repo.setOpenChat(null) }
     }
 

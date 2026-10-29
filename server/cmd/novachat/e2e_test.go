@@ -115,6 +115,24 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("offline presence %+v", p)
 	}
 	bws = dial(t, srv.URL, bob.token)
+	if p := readType(t, aws, "presence"); p.Online == nil || !*p.Online {
+		t.Fatalf("back online %+v", p)
+	}
+
+	// Bob's app goes to the background but stays connected: he shows as
+	// offline, then online again when he opens it.
+	bws.WriteJSON(map[string]any{"type": "active", "active": false})
+	if p := readType(t, aws, "presence"); p.Online == nil || *p.Online || p.LastSeenAt == nil {
+		t.Fatalf("background presence %+v", p)
+	}
+	aws.WriteJSON(map[string]string{"type": "presence_query", "to": bob.id})
+	if p := readType(t, aws, "presence"); p.Online == nil || *p.Online {
+		t.Fatalf("background presence query %+v", p)
+	}
+	bws.WriteJSON(map[string]any{"type": "active", "active": true})
+	if p := readType(t, aws, "presence"); p.Online == nil || !*p.Online {
+		t.Fatalf("foreground presence %+v", p)
+	}
 
 	// Profile photo: upload, fetch, and it shows on the profile.
 	jpeg := append([]byte{0xFF, 0xD8, 0xFF}, bytes.Repeat([]byte{1}, 1000)...)

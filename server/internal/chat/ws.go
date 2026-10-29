@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -30,7 +31,7 @@ const (
 
 // Frames sent by the app.
 type inbound struct {
-	Type     string `json:"type"` // "send", "receipt", "typing" or "presence_query"
+	Type     string `json:"type"` // "send", "receipt", "typing", "presence_query" or "active"
 	ClientID string `json:"client_id,omitempty"`
 	To       string `json:"to,omitempty"`
 	Body     string `json:"body,omitempty"`
@@ -40,6 +41,9 @@ type inbound struct {
 	IdentityKey string  `json:"identity_key,omitempty"`
 	Status      string  `json:"status,omitempty"` // "delivered" or "read"
 	MessageIDs  []int64 `json:"message_ids,omitempty"`
+	// "active" frames: whether the app is on screen. A phone that stays
+	// connected in the background (for notifications) is not "online".
+	Active *bool `json:"active,omitempty"`
 }
 
 // Frames sent by the server.
@@ -72,6 +76,8 @@ type client struct {
 	conn   *websocket.Conn
 	send   chan []byte
 	cancel context.CancelFunc
+	// active is false while the app is in the background.
+	active atomic.Bool
 }
 
 // enqueue queues a frame without blocking. A phone that cannot keep up is
@@ -96,19 +102,22 @@ func (h *Handlers) serveWS(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	c := &client{userID: auth.UserID(r.Context()), conn: conn, send: make(chan []byte, sendBufferSize), cancel: cancel}
-	first, err := h.Hub.add(ctx, c)
-	if err != nil {
+	// Apps count as on screen until they say otherwise (older apps never do).
+	c.active.Store(true)
+	wasOnline := h.Hub.anyActive(c.userID)
+	if _, err := h.Hub.add(ctx, c); err != nil {
 		slog.Error("hub add failed", "err", err)
 		cancel()
 		conn.Close()
 		return
 	}
 	defer func() {
-		if h.Hub.remove(c) {
+		h.Hub.remove(c)
+		if c.active.Load() && !h.Hub.anyActive(c.userID) {
 			h.wentOffline(c.userID)
 		}
 	}()
-	if first {
+	if !wasOnline {
 		h.Hub.MarkOnline(ctx, c.userID)
 		go h.announcePresence(c.userID, true, nil)
 	}
@@ -171,6 +180,10 @@ func (h *Handlers) readLoop(ctx context.Context, c *client) {
 			h.handleReceipt(ctx, c, in)
 		case "presence_query":
 			h.handlePresenceQuery(ctx, c, in.To)
+		case "active":
+			if in.Active != nil {
+				h.setActive(ctx, c, *in.Active)
+			}
 		case "typing":
 			if auth.IsUUID(in.To) && in.To != c.userID {
 				b, _ := json.Marshal(outbound{Type: "typing", From: c.userID})
@@ -241,8 +254,26 @@ func (h *Handlers) keepOnline(ctx context.Context, userID string) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			h.Hub.MarkOnline(ctx, userID)
+			if h.Hub.anyActive(userID) {
+				h.Hub.MarkOnline(ctx, userID)
+			}
 		}
+	}
+}
+
+// setActive records the app moving on or off screen, and updates the
+// user's presence when that changes whether they are online.
+func (h *Handlers) setActive(ctx context.Context, c *client, active bool) {
+	wasOnline := h.Hub.anyActive(c.userID)
+	if c.active.Swap(active) == active {
+		return
+	}
+	switch {
+	case active && !wasOnline:
+		h.Hub.MarkOnline(ctx, c.userID)
+		go h.announcePresence(c.userID, true, nil)
+	case !active && !h.Hub.anyActive(c.userID):
+		go h.wentOffline(c.userID)
 	}
 }
 

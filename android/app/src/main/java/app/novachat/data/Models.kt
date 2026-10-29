@@ -162,6 +162,18 @@ data class Group(
     fun asUser() = User(id = id, phone = "", name = name, about = description, avatarId = avatarId)
 }
 
+/** A new message to show in a notification. */
+data class IncomingNotice(
+    val chatId: String,
+    val title: String,
+    val isGroup: Boolean,
+    val senderId: String,
+    val senderName: String,
+    val senderAvatarId: String?,
+    val text: String,
+    val atMillis: Long,
+)
+
 /** The body of a group event message. */
 @Serializable
 data class GroupEvent(
