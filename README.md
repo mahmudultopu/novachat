@@ -223,6 +223,24 @@ button to send it (or the bin to discard it).
   videos and documents download when tapped. Decrypted files live in the
   app's private storage and are deleted on log out.
 
+### Profiles, last seen and online
+
+Settings → tap your card to set a **profile photo**, your **name** and an
+**about** line (up to 140 characters). Tap the name at the top of a chat to
+see the other person's photo, about and the encryption check.
+
+* Photos are cropped square and resized to 640 px on the phone (about 60 to
+  120 KB), uploaded with `PUT /v1/me/avatar` and cached on other phones.
+  Every new photo gets a new id, so a cached copy never goes stale.
+* The chat header shows **typing…**, then **online**, then **last seen today
+  at 14:05**. A phone counts as online while its WebSocket is connected; the
+  server keeps a short-lived key per user in Redis (`nc:online:<id>`, 75 s,
+  refreshed every 30 s) so it works across several server instances.
+* When someone comes online or goes offline, the people they have chatted with
+  get a `presence` frame. An app opening a chat asks with `presence_query`.
+  Profile photos, unlike messages, are not end-to-end encrypted, the same as
+  on most messengers.
+
 ### API
 
 | Method and path | Auth | Purpose |
@@ -231,6 +249,8 @@ button to send it (or the bin to discard it).
 | `POST /v1/auth/verify` `{phone, code, device_name}` | – | Returns `{token, user, is_new}` |
 | `POST /v1/auth/logout` | Bearer | Ends this device's session |
 | `GET /v1/me`, `PATCH /v1/me` `{name, about}` | Bearer | Your profile |
+| `PUT /v1/me/avatar` (JPEG), `DELETE /v1/me/avatar` | Bearer | Set or remove your profile photo |
+| `GET /v1/avatars/{id}` | Bearer | Download a profile photo |
 | `GET /v1/users/by-phone?phone=` | Bearer | Find someone to chat with |
 | `GET /v1/users/{id}` | Bearer | Someone's public profile |
 | `GET /v1/conversations` | Bearer | Chats with last message and unread count |
@@ -251,6 +271,7 @@ App to server:
 {"type": "receipt", "status": "delivered", "message_ids": [42, 43]}
 {"type": "receipt", "status": "read", "message_ids": [42, 43]}
 {"type": "typing", "to": "<user id>"}
+{"type": "presence_query", "to": "<user id>"}
 ```
 
 Server to app:
@@ -260,6 +281,7 @@ Server to app:
 {"type": "message", "message": {"id": 42, "client_id": "...", "sender_id": "...", "recipient_id": "...", "body": "Hello", "created_at": "...", "delivered_at": null, "read_at": null}}
 {"type": "receipt", "status": "read", "message_ids": [42], "at": "...", "from": "<reader id>"}
 {"type": "typing", "from": "<user id>"}
+{"type": "presence", "user_id": "<user id>", "online": false, "last_seen_at": "..."}
 {"type": "error", "code": "bad_recipient", "error": "...", "client_id": "..."}
 ```
 
@@ -294,6 +316,8 @@ Following the builder guide, in order:
    [End-to-end encryption](#end-to-end-encryption) below.
 3. ~~**Media**~~ (done in 0.4.0): photos, videos, voice notes and documents,
    see [Photos, videos, voice notes and documents](#photos-videos-voice-notes-and-documents).
-4. **Push notifications** with Firebase Cloud Messaging for offline phones.
-5. **Groups**, then **voice and video calls** (WebRTC + LiveKit + coturn).
-6. A real **SMS provider** for production sign-up, and deployment.
+4. ~~**Profiles and presence**~~ (done in 0.5.0): profile photo, about, last
+   seen and online, see [Profiles, last seen and online](#profiles-last-seen-and-online).
+5. **Push notifications** with Firebase Cloud Messaging for offline phones.
+6. **Groups**, then **voice and video calls** (WebRTC + LiveKit + coturn).
+7. A real **SMS provider** for production sign-up, and deployment.

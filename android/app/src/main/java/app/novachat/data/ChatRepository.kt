@@ -72,6 +72,8 @@ class ChatRepository(
     /** Client IDs of attachments being downloaded, for progress spinners. */
     val downloading: StateFlow<Set<String>> = _downloading
 
+    private val _presence = MutableStateFlow<Map<String, Presence>>(emptyMap())
+
     /** Who is typing to us right now, with when their indicator expires. */
     private val typing = MutableStateFlow<Map<String, Long>>(emptyMap())
     private var openPeer: String? = null
@@ -104,6 +106,33 @@ class ChatRepository(
     fun user(peerId: String): Flow<User?> = dao.user(peerId).map { it?.toUser() }
 
     fun isTyping(peerId: String): Flow<Boolean> = typing.map { peerId in it }
+
+    fun presence(peerId: String): Flow<Presence?> = _presence.map { it[peerId] }
+
+    /** Loads a profile photo, downloading it once and then reading it from the cache. */
+    suspend fun avatar(id: String, sizePx: Int): android.graphics.Bitmap? {
+        val file = media.avatarFile(id)
+        if (!file.exists()) {
+            val s = session ?: return null
+            val bytes = try {
+                api.avatar(s, id)
+            } catch (e: ApiException) {
+                return null
+            }
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                val tmp = java.io.File(file.path + "." + java.util.UUID.randomUUID() + ".part")
+                tmp.writeBytes(bytes)
+                tmp.renameTo(file)
+            }
+        }
+        return media.loadPreview(file.path, video = false, maxPx = sizePx)
+    }
+
+    /** Fetches someone's latest name, about and photo. */
+    fun refreshProfile(peerId: String) {
+        val s = session ?: return
+        scope.launch { runCatching { api.user(s, peerId) }.getOrNull()?.let { dao.upsertUser(it.toEntity()) } }
+    }
 
     @Synchronized
     fun start(newSession: Session) {
@@ -148,6 +177,7 @@ class ChatRepository(
         session = null
         myId.value = null
         typing.value = emptyMap()
+        _presence.value = emptyMap()
         if (clearData) {
             scope.launch {
                 writeLock.withLock {
@@ -250,7 +280,15 @@ class ChatRepository(
     /** Call while a chat is on screen; incoming messages there are marked read. */
     fun setOpenChat(peerId: String?) {
         openPeer = peerId
-        if (peerId != null) scope.launch { markRead(peerId) }
+        if (peerId != null) {
+            scope.launch { markRead(peerId) }
+            queryPresence(peerId)
+            refreshProfile(peerId)
+        }
+    }
+
+    private fun queryPresence(peerId: String) {
+        socket.send(buildJsonObject { put("type", "presence_query"); put("to", peerId) }.toString())
     }
 
     /**
@@ -374,7 +412,18 @@ class ChatRepository(
 
     private suspend fun onFrame(frame: ServerFrame) {
         when (frame.type) {
-            "ready" -> catchUp()
+            "ready" -> {
+                openPeer?.let(::queryPresence)
+                catchUp()
+            }
+            "presence" -> {
+                val who = frame.userId
+                if (who != null && frame.online != null) {
+                    _presence.update { it + (who to Presence(frame.online, frame.lastSeenAt)) }
+                    // Clear a stale "typing…" when they leave.
+                    if (!frame.online) typing.update { it - who }
+                }
+            }
             "message" -> frame.message?.let { applyMessages(listOf(it)) }
             "receipt" -> applyReceipt(frame)
             "typing" -> frame.from?.let { from ->
@@ -527,7 +576,7 @@ class ChatRepository(
         oneTimePreKey = oneTimePreKey?.publicKey?.unb64(),
     )
 
-    private fun User.toEntity() = UserEntity(id = id, phone = phone, name = name, about = about)
+    private fun User.toEntity() = UserEntity(id = id, phone = phone, name = name, about = about, avatarId = avatarId, lastSeenAt = lastSeenAt)
 
     @OptIn(ExperimentalCoroutinesApi::class)
     private fun Flow<String?>.flatMapUnread(): Flow<Map<String, Int>> = flatMapLatest { me ->

@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -26,6 +27,12 @@ func NewHub(ctx context.Context, rdb *redis.Client) *Hub {
 	return h
 }
 
+// presenceTTL is refreshed every presenceRefresh while a phone is connected.
+const (
+	presenceTTL     = 75 * time.Second
+	presenceRefresh = 30 * time.Second
+)
+
 func channel(userID string) string { return "nc:user:" + userID }
 
 func (h *Hub) run() {
@@ -46,22 +53,26 @@ func (h *Hub) Publish(ctx context.Context, userID string, payload []byte) {
 	}
 }
 
-func (h *Hub) add(ctx context.Context, c *client) error {
+// add registers a connection. first reports whether it is the user's only
+// connection on this instance.
+func (h *Hub) add(ctx context.Context, c *client) (first bool, err error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	set := h.conns[c.userID]
 	if set == nil {
 		if err := h.ps.Subscribe(ctx, channel(c.userID)); err != nil {
-			return err
+			return false, err
 		}
 		set = map[*client]struct{}{}
 		h.conns[c.userID] = set
 	}
 	set[c] = struct{}{}
-	return nil
+	return len(set) == 1, nil
 }
 
-func (h *Hub) remove(c *client) {
+// remove drops a connection. last reports whether the user has no other
+// connection on this instance.
+func (h *Hub) remove(c *client) (last bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	set := h.conns[c.userID]
@@ -71,7 +82,28 @@ func (h *Hub) remove(c *client) {
 		if err := h.ps.Unsubscribe(context.Background(), channel(c.userID)); err != nil {
 			slog.Error("unsubscribe failed", "user", c.userID, "err", err)
 		}
+		return true
 	}
+	return false
+}
+
+func presenceKey(userID string) string { return "nc:online:" + userID }
+
+// MarkOnline records that userID has a live connection. The key expires on
+// its own if this instance dies, so nobody stays "online" forever.
+func (h *Hub) MarkOnline(ctx context.Context, userID string) {
+	if err := h.rdb.Set(ctx, presenceKey(userID), "1", presenceTTL).Err(); err != nil {
+		slog.Error("mark online failed", "user", userID, "err", err)
+	}
+}
+
+func (h *Hub) MarkOffline(ctx context.Context, userID string) {
+	h.rdb.Del(ctx, presenceKey(userID))
+}
+
+func (h *Hub) IsOnline(ctx context.Context, userID string) bool {
+	n, err := h.rdb.Exists(ctx, presenceKey(userID)).Result()
+	return err == nil && n > 0
 }
 
 func (h *Hub) Close() error { return h.ps.Close() }

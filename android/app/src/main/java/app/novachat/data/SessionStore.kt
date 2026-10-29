@@ -25,6 +25,7 @@ class SessionStore(private val context: Context) {
         val phone = stringPreferencesKey("phone")
         val name = stringPreferencesKey("name")
         val about = stringPreferencesKey("about")
+        val avatarId = stringPreferencesKey("avatar_id")
         val serverUrl = stringPreferencesKey("server_url")
     }
 
@@ -39,6 +40,7 @@ class SessionStore(private val context: Context) {
                 phone = prefs[Keys.phone].orEmpty(),
                 name = prefs[Keys.name].orEmpty(),
                 about = prefs[Keys.about].orEmpty(),
+                avatarId = prefs[Keys.avatarId],
             ),
             serverUrl = prefs.serverUrl(),
         )
@@ -68,6 +70,7 @@ class SessionStore(private val context: Context) {
             it.remove(Keys.phone)
             it.remove(Keys.name)
             it.remove(Keys.about)
+            it.remove(Keys.avatarId)
         }
     }
 
@@ -76,6 +79,7 @@ class SessionStore(private val context: Context) {
         this[Keys.phone] = user.phone
         this[Keys.name] = user.name
         this[Keys.about] = user.about
+        if (user.avatarId != null) this[Keys.avatarId] = user.avatarId else remove(Keys.avatarId)
     }
 
     private fun Preferences.serverUrl() = this[Keys.serverUrl] ?: BuildConfig.DEFAULT_SERVER_URL

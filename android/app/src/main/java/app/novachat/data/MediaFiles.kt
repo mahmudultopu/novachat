@@ -97,6 +97,19 @@ class MediaFiles(private val context: Context) {
         )
     }
 
+    /** A square, center-cropped JPEG for a profile photo. */
+    suspend fun prepareAvatar(uri: Uri): ByteArray = withContext(Dispatchers.IO) {
+        val bitmap = decodeSampled(uri, AVATAR_PX * 2) ?: throw MediaException("That photo couldn't be opened")
+        val upright = rotateFromExif(uri, bitmap)
+        val side = minOf(upright.width, upright.height)
+        val square = Bitmap.createBitmap(upright, (upright.width - side) / 2, (upright.height - side) / 2, side, side)
+        val scaled = if (side > AVATAR_PX) Bitmap.createScaledBitmap(square, AVATAR_PX, AVATAR_PX, true) else square
+        ByteArrayOutputStream().also { scaled.compress(Bitmap.CompressFormat.JPEG, 85, it) }.toByteArray()
+    }
+
+    /** Where a downloaded profile photo is cached. Photo ids never change content. */
+    fun avatarFile(id: String) = File(File(context.cacheDir, "avatars").apply { mkdirs() }, "$id.jpg")
+
     fun prepareVoice(file: File, durationMs: Long) = PreparedMedia(
         file,
         Attachment(kind = AttachmentKind.voice, mime = "audio/mp4", size = file.length(), durationMs = durationMs),
@@ -215,5 +228,6 @@ class MediaFiles(private val context: Context) {
     companion object {
         const val MAX_FILE_BYTES = 16L * 1024 * 1024
         private const val MAX_PHOTO_PX = 1600
+        private const val AVATAR_PX = 640
     }
 }

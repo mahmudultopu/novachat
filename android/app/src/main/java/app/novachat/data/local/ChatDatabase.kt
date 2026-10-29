@@ -76,8 +76,10 @@ data class UserEntity(
     val phone: String,
     val name: String,
     val about: String,
+    val avatarId: String? = null,
+    val lastSeenAt: String? = null,
 ) {
-    fun toUser() = User(id = id, phone = phone, name = name, about = about)
+    fun toUser() = User(id = id, phone = phone, name = name, about = about, avatarId = avatarId, lastSeenAt = lastSeenAt)
 }
 
 /** Small settings that belong to the signed-in account, such as its user ID. */
@@ -249,7 +251,7 @@ abstract class ChatDao {
  */
 @Database(
     entities = [MessageEntity::class, UserEntity::class, MetaEntity::class, SessionEntity::class, PreKeyEntity::class],
-    version = 3,
+    version = 4,
     exportSchema = false,
 )
 abstract class ChatDatabase : RoomDatabase() {
@@ -275,9 +277,17 @@ abstract class ChatDatabase : RoomDatabase() {
             }
         }
 
+        /** 3 -> 4: profile photos and last seen. */
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `users` ADD COLUMN `avatarId` TEXT")
+                db.execSQL("ALTER TABLE `users` ADD COLUMN `lastSeenAt` TEXT")
+            }
+        }
+
         fun open(context: Context): ChatDatabase =
             Room.databaseBuilder(context, ChatDatabase::class.java, "novachat.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                 .build()
     }
 }

@@ -101,6 +101,42 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("unexpected receipt %+v", receipt)
 	}
 
+	// Alice sees Bob online, and offline with a last-seen time once he leaves.
+	aws.WriteJSON(map[string]string{"type": "presence_query", "to": bob.id})
+	if p := readType(t, aws, "presence"); p.Online == nil || !*p.Online || p.UserID != bob.id {
+		t.Fatalf("presence query %+v", p)
+	}
+	bws2 := dial(t, srv.URL, bob.token)
+	bws.Close()
+	bws = bws2
+	time.Sleep(100 * time.Millisecond)
+	bws2.Close()
+	if p := readType(t, aws, "presence"); p.Online == nil || *p.Online || p.LastSeenAt == nil {
+		t.Fatalf("offline presence %+v", p)
+	}
+	bws = dial(t, srv.URL, bob.token)
+
+	// Profile photo: upload, fetch, and it shows on the profile.
+	jpeg := append([]byte{0xFF, 0xD8, 0xFF}, bytes.Repeat([]byte{1}, 1000)...)
+	req, _ := http.NewRequest("PUT", srv.URL+"/v1/me/avatar", bytes.NewReader(jpeg))
+	req.Header.Set("Authorization", "Bearer "+bob.token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil || resp.StatusCode != 200 {
+		t.Fatalf("set avatar: %v %v", err, resp.Status)
+	}
+	resp.Body.Close()
+	var prof struct {
+		AvatarID string `json:"avatar_id"`
+	}
+	get(t, srv.URL+"/v1/users/"+bob.id, alice.token, &prof)
+	req, _ = http.NewRequest("GET", srv.URL+"/v1/avatars/"+prof.AvatarID, nil)
+	req.Header.Set("Authorization", "Bearer "+alice.token)
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil || resp.StatusCode != 200 || resp.Header.Get("Content-Type") != "image/jpeg" {
+		t.Fatalf("get avatar: %v %v", err, resp.Status)
+	}
+	resp.Body.Close()
+
 	// Bob's other device catches up with sync, and both see the chat listed.
 	var synced []struct{ ID int64 }
 	get(t, fmt.Sprintf("%s/v1/sync?after=%d", srv.URL, sent.Message.ID-1), bob.token, &synced)
@@ -200,9 +236,9 @@ func TestEndToEnd(t *testing.T) {
 
 	// Attachments: an encrypted blob goes up and comes back byte for byte.
 	blob := bytes.Repeat([]byte{0xAB, 0x01}, 100_000)
-	req, _ := http.NewRequest("POST", srv.URL+"/v1/attachments", bytes.NewReader(blob))
+	req, _ = http.NewRequest("POST", srv.URL+"/v1/attachments", bytes.NewReader(blob))
 	req.Header.Set("Authorization", "Bearer "+alice.token)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err = http.DefaultClient.Do(req)
 	if err != nil || resp.StatusCode != http.StatusCreated {
 		t.Fatalf("upload: %v %v", err, resp.Status)
 	}
@@ -260,6 +296,9 @@ func signUp(t *testing.T, base, phone, name string) account {
 type frame struct {
 	Type       string
 	Code       string
+	UserID     string     `json:"user_id"`
+	Online     *bool      `json:"online"`
+	LastSeenAt *time.Time `json:"last_seen_at"`
 	Status     string
 	MessageIDs []int64 `json:"message_ids"`
 	Message    *struct {
