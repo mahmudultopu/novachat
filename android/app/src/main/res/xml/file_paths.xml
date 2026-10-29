@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Files NovaChat may hand to other apps (open a document) or the camera (take a photo). -->
+<paths>
+    <files-path name="media" path="media/" />
+    <cache-path name="camera" path="camera/" />
+</paths>

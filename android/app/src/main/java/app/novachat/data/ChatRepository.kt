@@ -1,6 +1,7 @@
 package app.novachat.data
 
 import androidx.room.withTransaction
+import app.novachat.crypto.AttachmentCipher
 import app.novachat.crypto.CryptoException
 import app.novachat.crypto.Envelope
 import app.novachat.crypto.PreKeyBundle
@@ -36,6 +37,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.time.OffsetDateTime
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Keeps the signed-in user's chats in the on-phone database and in step with
@@ -51,6 +53,7 @@ class ChatRepository(
     private val socket: ChatSocket,
     private val db: ChatDatabase,
     private val keys: E2eKeys,
+    val media: MediaFiles,
     private val scope: CoroutineScope,
 ) {
     private val dao = db.chats()
@@ -61,6 +64,13 @@ class ChatRepository(
     private val writeLock = Mutex()
     /** Ratchet sessions must advance one message at a time. */
     private val cryptoLock = Mutex()
+
+    /** Messages being encrypted/uploaded right now, so a resend never doubles up. */
+    private val inFlight = ConcurrentHashMap.newKeySet<String>()
+
+    private val _downloading = MutableStateFlow<Set<String>>(emptySet())
+    /** Client IDs of attachments being downloaded, for progress spinners. */
+    val downloading: StateFlow<Set<String>> = _downloading
 
     /** Who is typing to us right now, with when their indicator expires. */
     private val typing = MutableStateFlow<Map<String, Long>>(emptyMap())
@@ -143,6 +153,7 @@ class ChatRepository(
                 writeLock.withLock {
                     dao.clear()
                     keys.reset()
+                    media.clear()
                 }
             }
         }
@@ -173,6 +184,53 @@ class ChatRepository(
         scope.launch {
             dao.upsertMessages(listOf(msg))
             deliver(msg)
+        }
+    }
+
+    /** Sends a photo, video, voice note or document, with an optional caption. */
+    fun sendAttachment(peerId: String, prepared: PreparedMedia, caption: String = "") {
+        val s = session ?: return
+        val msg = MessageEntity(
+            senderId = s.user.id,
+            clientId = UUID.randomUUID().toString(),
+            id = null,
+            recipientId = peerId,
+            peerId = peerId,
+            body = caption.trim(),
+            createdAtMillis = System.currentTimeMillis(),
+            deliveredAt = null,
+            readAt = null,
+            failed = false,
+            attachment = NovaJson.encodeToString(prepared.attachment),
+            localPath = prepared.file.path,
+        )
+        scope.launch {
+            dao.upsertMessages(listOf(msg))
+            deliver(msg)
+        }
+    }
+
+    /** Fetches and decrypts a received attachment into app storage. */
+    fun download(message: ChatMessage) {
+        val s = session ?: return
+        val a = message.attachment ?: return
+        val id = a.id ?: return
+        if (message.localPath != null || a.key == null || a.digest == null) return
+        if (message.clientId in _downloading.value) return
+        _downloading.update { it + message.clientId }
+        scope.launch {
+            try {
+                val plain = AttachmentCipher.decrypt(api.downloadAttachment(s, id), a.key.unb64(), a.digest.unb64())
+                val file = media.newFile(media.extensionFor(a))
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { file.writeBytes(plain) }
+                dao.setLocalPath(message.senderId, message.clientId, file.path)
+            } catch (e: ApiException) {
+                // Offline or expired: the bubble offers to try again.
+            } catch (e: CryptoException) {
+                // Tampered or corrupt download; never show it.
+            } finally {
+                _downloading.update { it - message.clientId }
+            }
         }
     }
 
@@ -220,7 +278,18 @@ class ChatRepository(
      * pending and goes out after the next reconnect.
      */
     private suspend fun deliver(msg: MessageEntity) {
+        if (!inFlight.add(msg.clientId)) return
+        try {
+            deliverOnce(msg)
+        } finally {
+            inFlight.remove(msg.clientId)
+        }
+    }
+
+    private suspend fun deliverOnce(msg: MessageEntity) {
         val s = session ?: return
+        // A file goes up (encrypted) before the message that points to it.
+        val attachment = if (msg.attachment != null) uploadIfNeeded(s, msg) ?: return else null
         var envelope = msg.envelope
         var identityKey = msg.envelopeKey
         if (envelope == null || identityKey == null) {
@@ -244,7 +313,9 @@ class ChatRepository(
             }
             try {
                 cryptoLock.withLock {
-                    val content = NovaJson.encodeToString(MessageContent(text = msg.body)).toByteArray()
+                    val content = NovaJson.encodeToString(
+                        MessageContent(text = msg.body.ifEmpty { null }, attachment = attachment),
+                    ).toByteArray()
                     envelope = NovaJson.encodeToString(cipher.encrypt(msg.peerId, content))
                     identityKey = cipher.remoteIdentity(msg.peerId)?.b64()
                     dao.setEnvelope(msg.senderId, msg.clientId, envelope, identityKey)
@@ -263,6 +334,34 @@ class ChatRepository(
                 put("identity_key", identityKey)
             }.toString(),
         )
+    }
+
+    /**
+     * Encrypts and uploads a message's file once, saving the blob id and key.
+     * Returns the finished attachment, or null when the message has none or
+     * the upload must wait for a connection.
+     */
+    private suspend fun uploadIfNeeded(s: Session, msg: MessageEntity): Attachment? {
+        val json = msg.attachment ?: return null
+        val a = NovaJson.decodeFromString<Attachment>(json)
+        if (a.id != null) return a
+        val path = msg.localPath
+        if (path == null || !java.io.File(path).exists()) {
+            dao.setFailed(msg.senderId, msg.clientId, true)
+            return null
+        }
+        val enc = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            AttachmentCipher.encrypt(java.io.File(path).readBytes())
+        }
+        val id = try {
+            api.uploadAttachment(s, enc.ciphertext)
+        } catch (e: ApiException) {
+            if (e.status != 0) dao.setFailed(msg.senderId, msg.clientId, true) // e.g. too large
+            return null
+        }
+        val done = a.copy(id = id, key = enc.key.b64(), digest = enc.digest.b64())
+        dao.setAttachment(msg.senderId, msg.clientId, NovaJson.encodeToString(done))
+        return done
     }
 
     private fun sendReceipt(status: String, ids: List<Long>): Boolean = ids.isEmpty() || socket.send(
@@ -374,9 +473,9 @@ class ChatRepository(
         }
         cryptoLock.withLock {
             db.withTransaction {
-                val text = try {
+                val content = try {
                     val decrypted = cipher.decrypt(peer, NovaJson.decodeFromString<Envelope>(envelope))
-                    NovaJson.decodeFromString<MessageContent>(String(decrypted.plaintext)).text.orEmpty()
+                    NovaJson.decodeFromString<MessageContent>(String(decrypted.plaintext))
                 } catch (e: CryptoException) {
                     null
                 } catch (e: kotlinx.serialization.SerializationException) {
@@ -384,7 +483,16 @@ class ChatRepository(
                 } catch (e: IllegalArgumentException) {
                     null
                 }
-                dao.insertMessage(if (text == null) base.copy(body = "", undecryptable = true) else base.copy(body = text))
+                dao.insertMessage(
+                    if (content == null) {
+                        base.copy(body = "", undecryptable = true)
+                    } else {
+                        base.copy(
+                            body = content.text.orEmpty(),
+                            attachment = content.attachment?.let { NovaJson.encodeToString(it) },
+                        )
+                    },
+                )
             }
         }
     }

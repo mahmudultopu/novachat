@@ -74,6 +74,9 @@ data class ChatMessage(
     val readAt: String? = null,
     val failed: Boolean = false,
     val undecryptable: Boolean = false,
+    val attachment: Attachment? = null,
+    /** The decrypted file on this phone, once sent or downloaded. */
+    val localPath: String? = null,
 ) {
     val status: DeliveryStatus
         get() = when {
@@ -99,7 +102,34 @@ data class Session(
 
 /** What a message says. Encrypted end to end as JSON inside the envelope. */
 @Serializable
-data class MessageContent(val text: String? = null)
+data class MessageContent(
+    val text: String? = null,
+    val attachment: Attachment? = null,
+)
+
+enum class AttachmentKind { image, video, voice, file }
+
+/**
+ * A photo, video, voice note or document. The file itself is uploaded
+ * encrypted; [key] and [digest] (base64) open and check it, and only ever
+ * travel inside the end-to-end encrypted message.
+ */
+@Serializable
+data class Attachment(
+    val kind: AttachmentKind,
+    val mime: String,
+    val size: Long,
+    /** Server blob id; null until the upload finishes. */
+    val id: String? = null,
+    val key: String? = null,
+    val digest: String? = null,
+    val name: String? = null,
+    val width: Int? = null,
+    val height: Int? = null,
+    @SerialName("duration_ms") val durationMs: Long? = null,
+    /** A tiny blurred JPEG (base64) shown until the real file is downloaded. */
+    val thumb: String? = null,
+)
 
 @Serializable
 data class SignedPreKeyDto(
@@ -133,3 +163,6 @@ data class KeyBundleDto(
     @SerialName("signed_prekey") val signedPreKey: SignedPreKeyDto,
     @SerialName("one_time_prekey") val oneTimePreKey: OneTimePreKeyDto? = null,
 )
+
+@Serializable
+data class UploadResponse(val id: String, val size: Long)

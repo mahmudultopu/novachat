@@ -201,6 +201,28 @@ The crypto core has unit tests (`android/app/src/test`): two simulated phones,
 lost and shuffled messages, tampering, replay, both people starting at once,
 and a forged prekey.
 
+### Photos, videos, voice notes and documents
+
+Tap the paperclip in a chat for **Photos & videos**, **Camera** or
+**Document**; tap the microphone to record a voice message, then the send
+button to send it (or the bin to discard it).
+
+* Photos are resized to at most 1600 px and re-encoded as JPEG on the phone,
+  which keeps them around 200 to 400 KB and strips location data. Videos and
+  documents are sent as they are, up to 16 MB. Voice notes are mono AAC at
+  32 kbps (about 240 KB a minute).
+* Every file is encrypted on the phone with its own AES-256-GCM key
+  (`crypto/AttachmentCipher.kt`) before upload. The key and the SHA-256 of the
+  encrypted file travel only inside the end-to-end encrypted message, so the
+  server stores bytes it can neither read nor swap.
+* The server (`server/internal/media`) keeps the encrypted blobs in Postgres
+  for 30 days (`POST /v1/attachments`, `GET /v1/attachments/{id}`). That is
+  fine for testing; move them to S3-compatible storage (Cloudflare R2,
+  Backblaze B2, MinIO) before real traffic.
+* Photos and voice notes download automatically when you open the chat;
+  videos and documents download when tapped. Decrypted files live in the
+  app's private storage and are deleted on log out.
+
 ### API
 
 | Method and path | Auth | Purpose |
@@ -216,6 +238,8 @@ and a forged prekey.
 | `GET /v1/sync?after=&limit=` | Bearer | Everything since a message id |
 | `PUT /v1/keys` | Bearer | Publish identity, signed prekey and one-time prekeys |
 | `GET /v1/keys/{id}` | Bearer | Claim someone's prekey bundle to start encryption |
+| `POST /v1/attachments` (raw bytes) | Bearer | Upload an encrypted file, returns `{id}` |
+| `GET /v1/attachments/{id}` | Bearer | Download an encrypted file |
 | `GET /v1/ws` | Bearer | Realtime WebSocket |
 
 ### WebSocket frames (JSON)
@@ -268,8 +292,8 @@ Following the builder guide, in order:
    database and a Keystore-protected session token come with step 2.
 2. ~~**End-to-end encryption**~~ (done in 0.3.0): see
    [End-to-end encryption](#end-to-end-encryption) below.
-3. **Push notifications** with Firebase Cloud Messaging for offline phones.
-4. **Media**: photos, video, voice notes and documents, encrypted on the
-   phone and uploaded to S3-compatible storage (MinIO locally).
+3. ~~**Media**~~ (done in 0.4.0): photos, videos, voice notes and documents,
+   see [Photos, videos, voice notes and documents](#photos-videos-voice-notes-and-documents).
+4. **Push notifications** with Firebase Cloud Messaging for offline phones.
 5. **Groups**, then **voice and video calls** (WebRTC + LiveKit + coturn).
 6. A real **SMS provider** for production sign-up, and deployment.

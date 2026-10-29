@@ -1,5 +1,29 @@
 package app.novachat.ui.chat
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
+import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
+import app.novachat.R
+import app.novachat.data.AttachmentKind
+import app.novachat.data.MediaException
+import app.novachat.data.PreparedMedia
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import java.io.File
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.height
 import androidx.compose.material.icons.filled.Lock
@@ -96,6 +120,85 @@ fun ChatScreen(peerId: String, onBack: () -> Unit) {
     }
     var lastTypingSent by remember { mutableLongStateOf(0L) }
 
+    // Media: pickers, camera, voice notes.
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val player = remember { VoicePlayer(scope) }
+    val recorder = remember { VoiceRecorder(context) }
+    var recording by remember { mutableStateOf(false) }
+    var recordMs by remember { mutableLongStateOf(0L) }
+    var showAttach by remember { mutableStateOf(false) }
+    var cameraUri by rememberSaveable { mutableStateOf<String?>(null) }
+    DisposableEffect(Unit) {
+        onDispose {
+            player.release()
+            recorder.cancel()
+        }
+    }
+    LaunchedEffect(recording) {
+        while (recording) {
+            recordMs = recorder.elapsedMs()
+            delay(200)
+        }
+    }
+    fun toast(text: String) = Toast.makeText(context, text, Toast.LENGTH_SHORT).show()
+    fun sendPrepared(prepare: suspend () -> PreparedMedia) {
+        scope.launch {
+            try {
+                repo.sendAttachment(peerId, prepare())
+            } catch (e: MediaException) {
+                toast(e.message ?: "Couldn't send that file")
+            }
+        }
+    }
+    val pickMedia = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri != null) {
+            sendPrepared {
+                val mime = context.contentResolver.getType(uri).orEmpty()
+                if (mime.startsWith("video/")) repo.media.prepareVideo(uri) else repo.media.preparePhoto(uri)
+            }
+        }
+    }
+    val takePicture = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
+        val u = cameraUri
+        if (ok && u != null) sendPrepared { repo.media.preparePhoto(Uri.parse(u)) }
+    }
+    val openDocument = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) sendPrepared { repo.media.prepareDocument(uri) }
+    }
+    fun startRecording() {
+        player.release()
+        if (recorder.start(repo.media.newFile("m4a"))) recording = true else toast("Couldn't start the microphone")
+    }
+    val micPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) startRecording() else toast("NovaChat needs the microphone to record voice messages")
+    }
+
+    if (showAttach) {
+        ModalBottomSheet(onDismissRequest = { showAttach = false }) {
+            Row(
+                Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 32.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+            ) {
+                AttachOption(R.drawable.ic_gallery, "Photos & videos", MaterialTheme.colorScheme.primary) {
+                    showAttach = false
+                    pickMedia.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
+                }
+                AttachOption(R.drawable.ic_camera, "Camera", MaterialTheme.colorScheme.secondary) {
+                    showAttach = false
+                    val file = File(context.cacheDir, "camera").apply { mkdirs() }.let { File(it, "${System.currentTimeMillis()}.jpg") }
+                    val uri = FileProvider.getUriForFile(context, context.packageName + ".files", file)
+                    cameraUri = uri.toString()
+                    takePicture.launch(uri)
+                }
+                AttachOption(R.drawable.ic_document, "Document", Color(0xFFF29B38)) {
+                    showAttach = false
+                    openDocument.launch(arrayOf("*/*"))
+                }
+            }
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -139,7 +242,7 @@ fun ChatScreen(peerId: String, onBack: () -> Unit) {
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 items(messages.asReversed(), key = { it.senderId + it.clientId }) { m ->
-                    Bubble(m, mine = m.senderId == myId, onRetry = { repo.retry(m.clientId) })
+                    Bubble(m, mine = m.senderId == myId, player = player, onRetry = { repo.retry(m.clientId) })
                 }
                 // reverseLayout: the last item sits above the oldest message.
                 item(key = "e2e-notice") { EncryptionNotice(onClick = { showSafety = true }) }
@@ -159,13 +262,32 @@ fun ChatScreen(peerId: String, onBack: () -> Unit) {
                     draft = ""
                     lastTypingSent = 0
                 },
+                recordingMs = if (recording) recordMs else null,
+                onAttach = { showAttach = true },
+                onMic = {
+                    val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+                    if (granted) startRecording() else micPermission.launch(Manifest.permission.RECORD_AUDIO)
+                },
+                onCancelRecording = {
+                    recorder.cancel()
+                    recording = false
+                },
+                onSendRecording = {
+                    recording = false
+                    val result = recorder.stop()
+                    if (result == null) {
+                        toast("Hold on a moment longer to record a voice message")
+                    } else {
+                        repo.sendAttachment(peerId, repo.media.prepareVoice(result.first, result.second))
+                    }
+                },
             )
         }
     }
 }
 
 @Composable
-private fun Bubble(m: ChatMessage, mine: Boolean, onRetry: () -> Unit) {
+private fun Bubble(m: ChatMessage, mine: Boolean, player: VoicePlayer, onRetry: () -> Unit) {
     val colors = LocalBubbleColors.current
     // Rounded "pill" bubbles with one tighter corner pointing at the sender.
     val shape = if (mine) {
@@ -184,7 +306,14 @@ private fun Bubble(m: ChatMessage, mine: Boolean, onRetry: () -> Unit) {
                 .widthIn(max = 300.dp)
                 .then(if (m.status == DeliveryStatus.Failed) Modifier.clickable(onClick = onRetry) else Modifier),
         ) {
-            Column(Modifier.padding(start = 14.dp, end = 12.dp, top = 8.dp, bottom = 6.dp)) {
+            val attachment = m.attachment.takeUnless { m.undecryptable }
+            val visual = attachment != null && (attachment.kind == AttachmentKind.image || attachment.kind == AttachmentKind.video)
+            val pad = if (visual) {
+                Modifier.padding(start = 5.dp, end = 5.dp, top = 5.dp, bottom = 6.dp)
+            } else {
+                Modifier.padding(start = 14.dp, end = 12.dp, top = 8.dp, bottom = 6.dp)
+            }
+            Column(pad) {
                 if (m.undecryptable) {
                     Text(
                         "This message couldn't be decrypted on this phone",
@@ -192,11 +321,17 @@ private fun Bubble(m: ChatMessage, mine: Boolean, onRetry: () -> Unit) {
                         style = MaterialTheme.typography.bodyLarge,
                         fontStyle = FontStyle.Italic,
                     )
+                } else if (attachment != null) {
+                    AttachmentView(m, attachment, fg, player)
+                    if (m.body.isNotEmpty()) {
+                        Spacer(Modifier.height(6.dp))
+                        Text(m.body, color = fg, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.padding(horizontal = 6.dp))
+                    }
                 } else {
                     Text(m.body, color = fg, style = MaterialTheme.typography.bodyLarge)
                 }
                 Row(
-                    Modifier.align(Alignment.End),
+                    Modifier.align(Alignment.End).padding(end = if (visual) 4.dp else 0.dp, top = 2.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     if (m.status == DeliveryStatus.Failed) {
@@ -214,37 +349,85 @@ private fun Bubble(m: ChatMessage, mine: Boolean, onRetry: () -> Unit) {
 }
 
 @Composable
-private fun MessageComposer(text: String, onText: (String) -> Unit, onSend: () -> Unit) {
+private fun MessageComposer(
+    text: String,
+    onText: (String) -> Unit,
+    onSend: () -> Unit,
+    recordingMs: Long?,
+    onAttach: () -> Unit,
+    onMic: () -> Unit,
+    onCancelRecording: () -> Unit,
+    onSendRecording: () -> Unit,
+) {
     Row(
         Modifier
             .fillMaxWidth()
             .padding(horizontal = 8.dp, vertical = 6.dp),
         verticalAlignment = Alignment.Bottom,
     ) {
-        TextField(
-            value = text,
-            onValueChange = onText,
-            placeholder = { Text("Message") },
-            maxLines = 6,
-            shape = RoundedCornerShape(24.dp),
-            colors = TextFieldDefaults.colors(
-                focusedContainerColor = MaterialTheme.colorScheme.surface,
-                unfocusedContainerColor = MaterialTheme.colorScheme.surface,
-                focusedIndicatorColor = Color.Transparent,
-                unfocusedIndicatorColor = Color.Transparent,
-            ),
-            modifier = Modifier.weight(1f),
-        )
+        Surface(
+            shape = RoundedCornerShape(26.dp),
+            color = MaterialTheme.colorScheme.surface,
+            modifier = Modifier.weight(1f).heightIn(min = 52.dp),
+        ) {
+            if (recordingMs != null) {
+                Row(Modifier.padding(horizontal = 6.dp).heightIn(min = 52.dp), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = onCancelRecording) {
+                        Icon(Icons.Filled.Delete, "Discard recording", tint = MaterialTheme.colorScheme.error)
+                    }
+                    Box(Modifier.size(10.dp).clip(CircleShape).background(MaterialTheme.colorScheme.error))
+                    Spacer(Modifier.width(10.dp))
+                    Text("Recording  " + formatDuration(recordingMs), style = MaterialTheme.typography.bodyLarge)
+                }
+            } else {
+                Row(verticalAlignment = Alignment.Bottom) {
+                    IconButton(onClick = onAttach, modifier = Modifier.padding(bottom = 2.dp)) {
+                        Icon(painterResource(R.drawable.ic_attach), "Attach", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    TextField(
+                        value = text,
+                        onValueChange = onText,
+                        placeholder = { Text("Message") },
+                        maxLines = 6,
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = Color.Transparent,
+                            unfocusedContainerColor = Color.Transparent,
+                            focusedIndicatorColor = Color.Transparent,
+                            unfocusedIndicatorColor = Color.Transparent,
+                        ),
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+        }
         Spacer(Modifier.width(8.dp))
+        val sendNow = recordingMs != null || text.isNotBlank()
         FilledIconButton(
-            onClick = onSend,
-            enabled = text.isNotBlank(),
+            onClick = { if (recordingMs != null) onSendRecording() else if (text.isNotBlank()) onSend() else onMic() },
             shape = CircleShape,
             colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.primary),
             modifier = Modifier.size(52.dp),
         ) {
-            Icon(Icons.AutoMirrored.Filled.Send, "Send")
+            if (sendNow) {
+                Icon(Icons.AutoMirrored.Filled.Send, "Send")
+            } else {
+                Icon(painterResource(R.drawable.ic_mic), "Record voice message")
+            }
         }
+    }
+}
+
+@Composable
+private fun AttachOption(icon: Int, label: String, color: Color, onClick: () -> Unit) {
+    Column(
+        Modifier.clip(RoundedCornerShape(16.dp)).clickable(onClick = onClick).padding(12.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Box(Modifier.size(60.dp).clip(RoundedCornerShape(20.dp)).background(color), contentAlignment = Alignment.Center) {
+            Icon(painterResource(icon), null, tint = Color.White, modifier = Modifier.size(28.dp))
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(label, style = MaterialTheme.typography.labelSmall)
     }
 }
 

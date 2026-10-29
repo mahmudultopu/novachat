@@ -58,6 +58,43 @@ class ApiClient(private val http: OkHttpClient) {
     suspend fun keyBundle(session: Session, userId: String): KeyBundleDto =
         call(session.serverUrl, "GET", "/v1/keys/$userId", session.token, null)
 
+    /** Uploads an already encrypted file and returns its blob id. */
+    suspend fun uploadAttachment(session: Session, ciphertext: ByteArray): String = withContext(Dispatchers.IO) {
+        val request = Request.Builder()
+            .url(session.serverUrl.trimEnd('/') + "/v1/attachments")
+            .header("Authorization", "Bearer ${session.token}")
+            .post(ciphertext.toRequestBody(OCTET_TYPE))
+            .build()
+        execute(request) { NovaJson.decodeFromString<UploadResponse>(it.body!!.string()).id }
+    }
+
+    suspend fun downloadAttachment(session: Session, id: String): ByteArray = withContext(Dispatchers.IO) {
+        val request = Request.Builder()
+            .url(session.serverUrl.trimEnd('/') + "/v1/attachments/$id")
+            .header("Authorization", "Bearer ${session.token}")
+            .build()
+        execute(request) { it.body!!.bytes() }
+    }
+
+    private fun <T> execute(request: Request, read: (okhttp3.Response) -> T): T {
+        val response = try {
+            http.newCall(request).execute()
+        } catch (e: IOException) {
+            throw ApiException(0, "network", "Can't reach the server")
+        }
+        return response.use {
+            if (!it.isSuccessful) {
+                val err = runCatching { NovaJson.decodeFromString<ApiErrorBody>(it.body?.string().orEmpty()) }.getOrNull()
+                throw ApiException(it.code, err?.error.orEmpty(), err?.message?.ifBlank { null } ?: "Server error ${it.code}")
+            }
+            try {
+                read(it)
+            } catch (e: IOException) {
+                throw ApiException(0, "network", "Connection lost during transfer")
+            }
+        }
+    }
+
     private suspend inline fun <reified T> call(
         baseUrl: String,
         verb: String,
@@ -96,5 +133,6 @@ class ApiClient(private val http: OkHttpClient) {
 
     private companion object {
         val JSON_TYPE = "application/json".toMediaType()
+        val OCTET_TYPE = "application/octet-stream".toMediaType()
     }
 }

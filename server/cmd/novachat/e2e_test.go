@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/mahmudultopu/novachat/server/internal/config"
 	"github.com/mahmudultopu/novachat/server/internal/db"
+	"github.com/mahmudultopu/novachat/server/internal/media"
 )
 
 // TestEndToEnd signs up two users and sends a message between them over
@@ -194,6 +196,34 @@ func TestEndToEnd(t *testing.T) {
 	}
 	if code := get(t, srv.URL+"/v1/me", newPhone.Token, nil); code != 200 {
 		t.Fatalf("new phone signed out: status %d", code)
+	}
+
+	// Attachments: an encrypted blob goes up and comes back byte for byte.
+	blob := bytes.Repeat([]byte{0xAB, 0x01}, 100_000)
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/attachments", bytes.NewReader(blob))
+	req.Header.Set("Authorization", "Bearer "+alice.token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil || resp.StatusCode != http.StatusCreated {
+		t.Fatalf("upload: %v %v", err, resp.Status)
+	}
+	var up struct{ ID string }
+	json.NewDecoder(resp.Body).Decode(&up)
+	resp.Body.Close()
+	req, _ = http.NewRequest("GET", srv.URL+"/v1/attachments/"+up.ID, nil)
+	req.Header.Set("Authorization", "Bearer "+newPhone.Token)
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil || resp.StatusCode != 200 {
+		t.Fatalf("download: %v %v", err, resp.Status)
+	}
+	got2, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !bytes.Equal(got2, blob) {
+		t.Fatalf("downloaded %d bytes, want %d", len(got2), len(blob))
+	}
+	req, _ = http.NewRequest("POST", srv.URL+"/v1/attachments", bytes.NewReader(make([]byte, media.MaxSize+1)))
+	req.Header.Set("Authorization", "Bearer "+alice.token)
+	if resp, err := http.DefaultClient.Do(req); err != nil || resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized upload accepted: %v", err)
 	}
 
 	// Without a token the socket is refused.

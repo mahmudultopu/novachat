@@ -47,6 +47,7 @@ import app.novachat.data.ApiException
 import app.novachat.data.ConnectionState
 import app.novachat.data.Conversation
 import app.novachat.ui.appContainer
+import app.novachat.ui.chat.previewText
 import app.novachat.ui.common.Avatar
 import app.novachat.ui.common.StatusTicks
 import app.novachat.ui.common.formatListTime
@@ -151,7 +152,7 @@ private fun ConversationRow(c: Conversation, myId: String?, onClick: () -> Unit)
                     Spacer(Modifier.width(4.dp))
                 }
                 Text(
-                    if (c.lastMessage.undecryptable) "Couldn't decrypt this message" else c.lastMessage.body,
+                    if (c.lastMessage.undecryptable) "Couldn't decrypt this message" else previewText(c.lastMessage),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
