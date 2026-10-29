@@ -114,6 +114,7 @@ fun ChatScreen(peerId: String, onBack: () -> Unit, openInfo: (isGroup: Boolean) 
     val people by repo.people.collectAsStateWithLifecycle(initialValue = emptyMap())
     val typing by remember(peerId) { repo.isTyping(peerId) }.collectAsStateWithLifecycle(initialValue = false)
     val presence by remember(peerId) { repo.presence(peerId) }.collectAsStateWithLifecycle(initialValue = null)
+    val waitingForKeys by remember(peerId) { repo.waitingForKeys(peerId) }.collectAsStateWithLifecycle(initialValue = false)
     val session by container.session.collectAsStateWithLifecycle()
     val myId = (session as? SessionState.SignedIn)?.session?.user?.id
 
@@ -365,6 +366,9 @@ fun ChatScreen(peerId: String, onBack: () -> Unit, openInfo: (isGroup: Boolean) 
                 item(key = "e2e-notice") {
                     EncryptionNotice(onClick = { if (group != null) openInfo(true) else showSafety = true })
                 }
+            }
+            if (waitingForKeys && group == null) {
+                SystemNotice("${peer?.displayName ?: "They"} hasn't opened NovaChat yet. Your messages will be sent as soon as they do.")
             }
             replyTo?.let { r ->
                 ComposerBanner(nameOf(r.senderId), previewText(r), onClose = { replyTo = null })

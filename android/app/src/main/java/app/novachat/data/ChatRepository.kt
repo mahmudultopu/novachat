@@ -75,6 +75,9 @@ class ChatRepository(
 
     private val _presence = MutableStateFlow<Map<String, Presence>>(emptyMap())
 
+    /** People we have messages queued for who haven't opened NovaChat since signing up. */
+    private val _waitingForKeys = MutableStateFlow<Set<String>>(emptySet())
+
     /** Who is typing to us right now, with when their indicator expires. */
     private val typing = MutableStateFlow<Map<String, Long>>(emptyMap())
     private var openPeer: String? = null
@@ -118,6 +121,9 @@ class ChatRepository(
     fun isTyping(peerId: String): Flow<Boolean> = typing.map { peerId in it }
 
     fun presence(peerId: String): Flow<Presence?> = _presence.map { it[peerId] }
+
+    /** True while messages to this person wait for them to open NovaChat. */
+    fun waitingForKeys(peerId: String): Flow<Boolean> = _waitingForKeys.map { peerId in it }
 
     /** Loads a profile photo, downloading it once and then reading it from the cache. */
     suspend fun avatar(id: String, sizePx: Int): android.graphics.Bitmap? {
@@ -166,6 +172,16 @@ class ChatRepository(
                 // Subscribe to frames before connecting so "ready" is never missed.
                 launch(start = CoroutineStart.UNDISPATCHED) { socket.frames.collect(::onFrame) }
                 connectIfCurrent(newSession)
+            },
+            scope.launch {
+                // Retry queued messages now and then, for example to someone
+                // who hasn't opened NovaChat yet or while the server restarts.
+                while (true) {
+                    delay(RETRY_MS)
+                    if (socket.state.value == ConnectionState.Connected) {
+                        dao.pending(newSession.user.id).forEach { deliver(it) }
+                    }
+                }
             },
             scope.launch {
                 socket.state.collect { if (it == ConnectionState.Unauthorized) _unauthorized.tryEmit(Unit) }
@@ -519,10 +535,17 @@ class ChatRepository(
                 val bundle = try {
                     api.keyBundle(s, msg.recipientId)
                 } catch (e: ApiException) {
-                    // 404: they have not opened an encrypting version of NovaChat yet.
-                    if (e.status != 0) dao.setFailed(msg.senderId, msg.clientId, true)
+                    when {
+                        // They haven't opened NovaChat since signing up: keep the
+                        // message queued and try again later.
+                        e.status == 404 -> _waitingForKeys.update { it + msg.recipientId }
+                        // Offline, or the server is waking up or updating.
+                        e.status == 0 || e.status >= 500 -> Unit
+                        else -> dao.setFailed(msg.senderId, msg.clientId, true)
+                    }
                     return
                 }
+                _waitingForKeys.update { it - msg.recipientId }
                 try {
                     cryptoLock.withLock {
                         if (!cipher.hasSession(msg.recipientId)) cipher.startSession(msg.recipientId, bundle.toPreKeyBundle())
@@ -738,7 +761,8 @@ class ChatRepository(
         val id = try {
             api.uploadAttachment(s, enc.ciphertext)
         } catch (e: ApiException) {
-            if (e.status != 0) dao.setFailed(msg.senderId, msg.clientId, true) // e.g. too large
+            // Too large fails for good; offline or a waking server is retried.
+            if (e.status in 400..499) dao.setFailed(msg.senderId, msg.clientId, true)
             return null
         }
         val done = a.copy(id = id, key = enc.key.b64(), digest = enc.digest.b64())
@@ -989,6 +1013,7 @@ class ChatRepository(
     private companion object {
         const val SYNC_PAGE = 500
         const val TYPING_MS = 4_000L
+        const val RETRY_MS = 30_000L
         const val OWNER = "owner_user_id"
         const val EDIT_WINDOW_MS = 15 * 60_000L
         const val DELETE_WINDOW_MS = 48 * 3_600_000L
