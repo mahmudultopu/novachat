@@ -197,6 +197,15 @@ data class PreKeyEntity(
     val privateKey: String,
 )
 
+/** How the user arranged one chat: pinned, archived or muted. Kept on this phone only. */
+@Entity(tableName = "chat_prefs")
+data class ChatPrefsEntity(
+    @PrimaryKey val peerId: String,
+    val pinnedAtMillis: Long? = null,
+    val archived: Boolean = false,
+    val mutedUntilMillis: Long? = null,
+)
+
 data class UnreadCount(val peerId: String, val unread: Int)
 
 @Dao
@@ -478,6 +487,21 @@ abstract class ChatDao {
     @Query("DELETE FROM prekeys")
     abstract suspend fun deletePreKeys()
 
+    @Query("SELECT * FROM chat_prefs")
+    abstract fun chatPrefs(): Flow<List<ChatPrefsEntity>>
+
+    @Query("SELECT * FROM chat_prefs WHERE peerId = :peerId")
+    abstract suspend fun chatPrefsNow(peerId: String): ChatPrefsEntity?
+
+    @Query("SELECT COUNT(*) FROM chat_prefs WHERE pinnedAtMillis IS NOT NULL")
+    abstract suspend fun pinnedCount(): Int
+
+    @Upsert
+    abstract suspend fun upsertChatPrefs(prefs: ChatPrefsEntity)
+
+    @Query("DELETE FROM chat_prefs")
+    abstract suspend fun deleteChatPrefs()
+
     @Query("DELETE FROM messages")
     abstract suspend fun deleteMessages()
 
@@ -497,6 +521,7 @@ abstract class ChatDao {
         deletePreKeys()
         deleteGroups()
         deleteStatuses()
+        deleteChatPrefs()
     }
 }
 
@@ -507,8 +532,8 @@ abstract class ChatDao {
  * so every schema change needs a migration that keeps the data.
  */
 @Database(
-    entities = [MessageEntity::class, UserEntity::class, MetaEntity::class, SessionEntity::class, PreKeyEntity::class, GroupEntity::class, StatusEntity::class],
-    version = 8,
+    entities = [MessageEntity::class, UserEntity::class, MetaEntity::class, SessionEntity::class, PreKeyEntity::class, GroupEntity::class, StatusEntity::class, ChatPrefsEntity::class],
+    version = 9,
     exportSchema = false,
 )
 abstract class ChatDatabase : RoomDatabase() {
@@ -589,9 +614,19 @@ abstract class ChatDatabase : RoomDatabase() {
             }
         }
 
+        /** 8 -> 9: pinned, archived and muted chats. */
+        private val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `chat_prefs` (`peerId` TEXT NOT NULL, `pinnedAtMillis` INTEGER, " +
+                        "`archived` INTEGER NOT NULL, `mutedUntilMillis` INTEGER, PRIMARY KEY(`peerId`))",
+                )
+            }
+        }
+
         fun open(context: Context): ChatDatabase =
             Room.databaseBuilder(context, ChatDatabase::class.java, "novachat.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
                 .build()
     }
 }

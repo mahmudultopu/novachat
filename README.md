@@ -346,6 +346,19 @@ or off, and flip between cameras. A finished call shows up in the chat as
 * Calls need the native WebRTC library, built only for ARM phones to keep the
   app small. PC emulators with ARM translation still run it.
 
+### Pin, mute and archive
+
+Long-press a chat in the list:
+
+* **Pin chat** keeps it at the top (up to 3 chats).
+* **Mute notifications** for 8 hours, a week or always. Messages still arrive
+  and count as unread, with a grey badge, but make no notification.
+* **Archive chat** moves it under **Archived** at the top of the list. It
+  stays there when new messages arrive; long-press it there to unarchive.
+
+These choices live only on this phone (the `chat_prefs` table), so the server
+never learns who you pinned or muted.
+
 ### API
 
 | Method and path | Auth | Purpose |
@@ -444,4 +457,7 @@ Following the builder guide, in order:
    [Notifications](#notifications).
 9. ~~**Voice and video calls**~~ (done in 0.10.0): one-to-one, see
    [Voice and video calls](#voice-and-video-calls). Group calls come next.
-10. A real **SMS provider** for production sign-up, and deployment.
+10. **Chat controls**: ~~pin, mute and archive~~ (done in 0.11.0, see
+    [Pin, mute and archive](#pin-mute-and-archive)); disappearing messages,
+    block, report and privacy settings next.
+11. A real **SMS provider** for production sign-up, and deployment.

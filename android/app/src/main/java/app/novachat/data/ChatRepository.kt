@@ -9,6 +9,7 @@ import app.novachat.crypto.SessionCipher
 import app.novachat.crypto.b64
 import app.novachat.crypto.unb64
 import app.novachat.data.local.ChatDatabase
+import app.novachat.data.local.ChatPrefsEntity
 import app.novachat.data.local.MessageEntity
 import app.novachat.data.local.GroupEntity
 import app.novachat.data.local.MetaEntity
@@ -107,9 +108,11 @@ class ChatRepository(
         myId.flatMapUnread(),
         dao.users(),
         dao.groups(),
-    ) { last, unread, people, groupRows ->
+        dao.chatPrefs(),
+    ) { last, unread, people, groupRows, prefRows ->
         val names = people.associateBy { it.id }
         val groups = groupRows.associate { it.id to it.toGroup() }
+        val prefs = prefRows.associateBy { it.peerId }
         last.map { m ->
             val group = groups[m.peerId]
             Conversation(
@@ -117,9 +120,37 @@ class ChatRepository(
                 lastMessage = m.toChatMessage(),
                 unread = unread[m.peerId] ?: 0,
                 group = group,
+                prefs = prefs[m.peerId]?.toPrefs() ?: ChatPrefs(),
             )
-        }.sortedByDescending { it.lastMessage.id ?: Long.MAX_VALUE }
+        }.sortedWith(
+            // Pinned chats first, most recently pinned on top; then newest message first.
+            compareByDescending<Conversation> { prefs[it.peer.id]?.pinnedAtMillis ?: Long.MIN_VALUE }
+                .thenByDescending { it.lastMessage.id ?: Long.MAX_VALUE },
+        )
     }
+
+    /** Pins a chat to the top of the list. Returns false if [MAX_PINNED] chats are already pinned. */
+    suspend fun setPinned(peerId: String, pinned: Boolean): Boolean = db.withTransaction {
+        val p = dao.chatPrefsNow(peerId) ?: ChatPrefsEntity(peerId)
+        if (pinned && p.pinnedAtMillis == null && dao.pinnedCount() >= MAX_PINNED) return@withTransaction false
+        dao.upsertChatPrefs(p.copy(pinnedAtMillis = if (pinned) p.pinnedAtMillis ?: System.currentTimeMillis() else null))
+        true
+    }
+
+    /** Moves a chat into or out of Archived. An archived chat is never pinned. */
+    suspend fun setArchived(peerId: String, archived: Boolean) = db.withTransaction {
+        val p = dao.chatPrefsNow(peerId) ?: ChatPrefsEntity(peerId)
+        dao.upsertChatPrefs(p.copy(archived = archived, pinnedAtMillis = if (archived) null else p.pinnedAtMillis))
+    }
+
+    /** Silences a chat's notifications until [untilMillis], or unmutes it when null. */
+    suspend fun setMuted(peerId: String, untilMillis: Long?) = db.withTransaction {
+        val p = dao.chatPrefsNow(peerId) ?: ChatPrefsEntity(peerId)
+        dao.upsertChatPrefs(p.copy(mutedUntilMillis = untilMillis))
+    }
+
+    private fun ChatPrefsEntity.toPrefs() =
+        ChatPrefs(pinned = pinnedAtMillis != null, archived = archived, mutedUntilMillis = mutedUntilMillis)
 
     /** Everyone this phone knows, by user ID. */
     val people: Flow<Map<String, User>> = dao.users().map { list -> list.associate { it.id to it.toUser() } }
@@ -650,6 +681,8 @@ class ChatRepository(
     }
 
     private suspend fun notice(m: MessageEntity) {
+        val mutedUntil = dao.chatPrefsNow(m.peerId)?.mutedUntilMillis
+        if (mutedUntil != null && mutedUntil > System.currentTimeMillis()) return
         val sender = dao.userNow(m.senderId)?.toUser()
         val senderName = sender?.displayName ?: "Someone"
         val group = m.groupId?.let { dao.groupNow(it) }
@@ -1335,6 +1368,7 @@ class ChatRepository(
 
     private companion object {
         const val SYNC_PAGE = 500
+        const val MAX_PINNED = 3
         const val TYPING_MS = 4_000L
         const val RETRY_MS = 30_000L
         val FALLBACK_ICE = listOf(IceServerDto(urls = listOf("stun:stun.l.google.com:19302")))
