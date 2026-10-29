@@ -38,4 +38,20 @@ class MessageContentTest {
         assertTrue("\"reply_to\":{\"sender_id\":\"alice\",\"client_id\":\"c1\"}" in json)
         assertFalse(NovaJson.decodeFromString<MessageContent>(json).isControl)
     }
+
+    @Test
+    fun callSignalsAreHiddenAndCallLogsAreShown() {
+        val offer = MessageContent(call = CallSignal(id = "k1", type = "offer", video = true, sdp = "v=0"))
+        val back = NovaJson.decodeFromString<MessageContent>(NovaJson.encodeToString(offer))
+        assertEquals(offer, back)
+        assertTrue(back.isControl)
+
+        val log = MessageContent(callLog = CallLog(video = false, outcome = "answered", durationSec = 151))
+        val json = NovaJson.encodeToString(log)
+        assertTrue("\"duration_s\":151" in json)
+        val logBack = NovaJson.decodeFromString<MessageContent>(json)
+        assertFalse(logBack.isControl)
+        assertFalse(logBack.callLog!!.missed)
+        assertTrue(CallLog(outcome = "declined").missed)
+    }
 }

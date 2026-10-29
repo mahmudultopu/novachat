@@ -16,9 +16,13 @@ android {
         applicationId = "app.novachat"
         minSdk = 26
         targetSdk = 35
-        versionCode = 9
-        versionName = "0.9.0"
+        versionCode = 10
+        versionName = "0.10.0"
         buildConfigField("String", "DEFAULT_SERVER_URL", "\"$serverUrl\"")
+        // Calls (WebRTC) ship native code per CPU type. Real phones are ARM,
+        // so leaving out the emulator-only x86 builds keeps the app ~25 MB
+        // smaller. Add "x86_64" here to try calls on a PC emulator.
+        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
     }
 
     signingConfigs {
@@ -73,6 +77,7 @@ dependencies {
     implementation(libs.androidx.room.ktx)
     ksp(libs.androidx.room.compiler)
     implementation(libs.tink.android)
+    implementation(libs.webrtc)
     testImplementation(libs.junit)
     testImplementation(libs.kotlin.test.junit)
     debugImplementation(libs.androidx.compose.ui.tooling)

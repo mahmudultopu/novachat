@@ -293,6 +293,10 @@ fun formatSize(bytes: Long): String = when {
 fun previewText(m: ChatMessage): String {
     if (m.deleted) return "This message was deleted"
     if (m.undecryptable) return "Couldn't decrypt this message"
+    m.callLog?.let { log ->
+        val kind = if (log.video) "📹 Video call" else "📞 Voice call"
+        return if (log.outcome == "answered") "$kind · ${formatDuration(log.durationSec * 1000L)}" else kind
+    }
     val a = m.attachment ?: return m.body
     val label = when (a.kind) {
         AttachmentKind.image -> "Photo"

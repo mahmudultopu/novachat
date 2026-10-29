@@ -6,10 +6,14 @@ import android.content.Intent
 import androidx.core.app.RemoteInput
 import app.novachat.NovaChatApp
 
-/** "Reply" and "Mark as read" on a message notification. */
+/** "Reply" and "Mark as read" on a message notification, and "Decline" or "Hang up" on a call. */
 class NotificationActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val container = (context.applicationContext as NovaChatApp).container
+        when (intent.action) {
+            Notifier.ACTION_DECLINE_CALL -> return container.calls.decline()
+            Notifier.ACTION_HANG_UP -> return container.calls.hangUp()
+        }
         val chatId = intent.getStringExtra(Notifier.EXTRA_CHAT) ?: return
         when (intent.action) {
             Notifier.ACTION_REPLY -> {

@@ -2,6 +2,7 @@ package app.novachat
 
 import android.app.Application
 import android.content.Context
+import app.novachat.calls.CallManager
 import app.novachat.notify.ConnectionService
 import app.novachat.notify.Notifier
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -62,6 +63,7 @@ class AppContainer(app: Application) {
     val chats = ChatRepository(api, ChatSocket(http, scope), database, E2eKeys(database.chats(), Vault()), MediaFiles(app), scope)
 
     val notifier = Notifier(app, chats.media)
+    val calls = CallManager(app, chats, notifier, scope)
 
     private val prefs = app.getSharedPreferences("settings", Context.MODE_PRIVATE)
     private val _backgroundConnection = MutableStateFlow(prefs.getBoolean(KEY_BACKGROUND, true))

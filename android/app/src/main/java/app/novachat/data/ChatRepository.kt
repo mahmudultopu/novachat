@@ -76,6 +76,10 @@ class ChatRepository(
 
     private val _presence = MutableStateFlow<Map<String, Presence>>(emptyMap())
 
+    private val _callSignals = MutableSharedFlow<IncomingCallSignal>(extraBufferCapacity = 32)
+    /** Call offers, answers and hang-ups from the people we chat with. */
+    val callSignals: SharedFlow<IncomingCallSignal> = _callSignals
+
     /** People we have messages queued for who haven't opened NovaChat since signing up. */
     private val _waitingForKeys = MutableStateFlow<Set<String>>(emptySet())
 
@@ -271,10 +275,16 @@ class ChatRepository(
         dao.deleteExpiredStatuses(now)
     }
 
+    /** Recent voice and video calls, newest first. */
+    val callLogs: Flow<List<ChatMessage>> = dao.callLogs().map { list -> list.map { it.toChatMessage() } }
+
     fun messagesWith(peerId: String): Flow<List<ChatMessage>> =
         dao.messagesWith(peerId).map { list -> list.map { it.toChatMessage() } }
 
     fun user(peerId: String): Flow<User?> = dao.user(peerId).map { it?.toUser() }
+
+    /** Someone this phone knows, right now. */
+    suspend fun person(id: String): User? = dao.userNow(id)?.toUser()
 
     fun isTyping(peerId: String): Flow<Boolean> = typing.map { peerId in it }
 
@@ -435,6 +445,47 @@ class ChatRepository(
         }
     }
 
+    /** Sends one step of setting up a call, encrypted, in order with the others. */
+    suspend fun sendCallSignal(peerId: String, signal: CallSignal) {
+        sendControl(peerId, MessageContent(call = signal))
+    }
+
+    /** Forgets a call offer that never left this phone, so a call that is over can't ring later. */
+    suspend fun dropUnsentCallOffers(peerId: String) {
+        val me = session?.user?.id ?: return
+        dao.deleteUnsentCallOffers(me, peerId)
+    }
+
+    /** Adds "Voice call · 2:31" (or "Missed voice call") to the chat, on both phones. */
+    suspend fun sendCallLog(peerId: String, log: CallLog) {
+        val s = session ?: return
+        queue(
+            MessageEntity(
+                senderId = s.user.id,
+                clientId = UUID.randomUUID().toString(),
+                id = null,
+                recipientId = peerId,
+                peerId = peerId,
+                body = "",
+                createdAtMillis = System.currentTimeMillis(),
+                deliveredAt = null,
+                readAt = null,
+                failed = false,
+                callLog = NovaJson.encodeToString(log),
+            ),
+        )
+    }
+
+    /** The STUN/TURN servers to connect calls through, or a public STUN server if the server can't say. */
+    suspend fun iceServers(): List<IceServerDto> {
+        val s = session ?: return FALLBACK_ICE
+        return try {
+            api.iceServers(s).iceServers.ifEmpty { FALLBACK_ICE }
+        } catch (e: ApiException) {
+            FALLBACK_ICE
+        }
+    }
+
     /** Reacts to a message with [emoji], or takes the reaction back with "". */
     fun react(m: ChatMessage, emoji: String) {
         val me = session?.user?.id ?: return
@@ -574,6 +625,11 @@ class ChatRepository(
      * their own, and only within the time limits.
      */
     private suspend fun applyControl(from: String, peer: String, c: MessageContent, sentAtMillis: Long) {
+        c.call?.let {
+            // Calls are one-to-one: ignore call signals inside a group chat.
+            if (peer == from) _callSignals.tryEmit(IncomingCallSignal(from, it, sentAtMillis))
+            return
+        }
         if (applyStatusControl(from, c, sentAtMillis)) return
         val ref = c.reaction?.target ?: c.edit?.target ?: c.delete ?: return
         val target = dao.message(ref.senderId, ref.clientId) ?: return
@@ -598,8 +654,12 @@ class ChatRepository(
         val senderName = sender?.displayName ?: "Someone"
         val group = m.groupId?.let { dao.groupNow(it) }
         val a = m.attachment?.let { runCatching { NovaJson.decodeFromString<Attachment>(it) }.getOrNull() }
+        val call = m.callLog?.let { runCatching { NovaJson.decodeFromString<CallLog>(it) }.getOrNull() }
+        // Only missed calls notify; an answered call needs no reminder.
+        if (call != null && !call.missed) return
         val text = when {
             m.undecryptable -> "New message"
+            call != null -> if (call.video) "📹 Missed video call" else "📞 Missed voice call"
             a == null -> m.body
             else -> when (a.kind) {
                 AttachmentKind.image -> "📷 Photo"
@@ -813,6 +873,7 @@ class ChatRepository(
                                 attachment = attachment,
                                 replyTo = msg.replyTo?.let { NovaJson.decodeFromString<MessageRef>(it) },
                                 forwarded = msg.forwarded,
+                                callLog = msg.callLog?.let { NovaJson.decodeFromString<CallLog>(it) },
                             ),
                         )
                     ).toByteArray()
@@ -1216,6 +1277,9 @@ class ChatRepository(
                             attachment = content.attachment?.let { NovaJson.encodeToString(it) },
                             replyTo = content.replyTo?.let { NovaJson.encodeToString(it) },
                             forwarded = content.forwarded,
+                            callLog = content.callLog?.let { NovaJson.encodeToString(it) },
+                            // An answered call is nothing new to read: don't count it as unread.
+                            readAt = if (content.callLog?.missed == false) base.readAt ?: dto.createdAt else base.readAt,
                         ),
                     )
                 }
@@ -1273,6 +1337,7 @@ class ChatRepository(
         const val SYNC_PAGE = 500
         const val TYPING_MS = 4_000L
         const val RETRY_MS = 30_000L
+        val FALLBACK_ICE = listOf(IceServerDto(urls = listOf("stun:stun.l.google.com:19302")))
         const val OWNER = "owner_user_id"
         const val EDIT_WINDOW_MS = 15 * 60_000L
         const val DELETE_WINDOW_MS = 48 * 3_600_000L

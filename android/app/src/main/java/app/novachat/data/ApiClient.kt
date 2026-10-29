@@ -141,6 +141,10 @@ class ApiClient(private val http: OkHttpClient) {
     suspend fun keyBundle(session: Session, userId: String): KeyBundleDto =
         call(session.serverUrl, "GET", "/v1/keys/$userId", session.token, null)
 
+    /** STUN and TURN servers for setting up a call. */
+    suspend fun iceServers(session: Session): IceServersResponse =
+        call(session.serverUrl, "GET", "/v1/calls/ice", session.token, null)
+
     /** Uploads an already encrypted file and returns its blob id. */
     suspend fun uploadAttachment(session: Session, ciphertext: ByteArray): String = withContext(Dispatchers.IO) {
         val request = Request.Builder()
