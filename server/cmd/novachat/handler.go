@@ -8,6 +8,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/mahmudultopu/novachat/server/internal/auth"
+	"github.com/mahmudultopu/novachat/server/internal/calls"
 	"github.com/mahmudultopu/novachat/server/internal/chat"
 	"github.com/mahmudultopu/novachat/server/internal/config"
 	"github.com/mahmudultopu/novachat/server/internal/groups"
@@ -41,5 +42,12 @@ func NewHandler(ctx context.Context, cfg config.Config, pool *pgxpool.Pool, rdb 
 	keysH.Register(mux)
 	chatH.Register(mux)
 	(&groups.Handlers{DB: pool, Hub: hub, Auth: authH, APKURL: apkURL}).Register(mux)
+	(&calls.Handlers{Auth: authH, Config: calls.Config{
+		STUNURLs:        cfg.STUNURLs,
+		TURNURLs:        cfg.TURNURLs,
+		TURNSecret:      cfg.TURNSecret,
+		CloudflareKeyID: cfg.CloudflareKeyID,
+		CloudflareToken: cfg.CloudflareToken,
+	}}).Register(mux)
 	return mux, func() { hub.Close() }
 }

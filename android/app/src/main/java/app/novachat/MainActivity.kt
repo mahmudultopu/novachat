@@ -1,10 +1,14 @@
 package app.novachat
 
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -19,6 +23,9 @@ class MainActivity : ComponentActivity() {
     /** A chat to open, from a notification. */
     private var chatToOpen by mutableStateOf<String?>(null)
 
+    /** "Answer" was tapped on an incoming call notification. */
+    private var answerCall by mutableStateOf(false)
+
     private val container get() = (application as NovaChatApp).container
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -26,12 +33,17 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         if (savedInstanceState == null) readIntent(intent)
         setContent {
+            // Calls show over the lock screen; nothing else does.
+            val call by container.calls.state.collectAsState()
+            LaunchedEffect(call == null) { if (call == null) showOverLockScreen(false) else showOverLockScreen(true) }
             NovaChatTheme {
                 NovaChatRoot(
                     inviteLink = inviteLink,
                     onInviteShown = { inviteLink = null },
                     chatToOpen = chatToOpen,
                     onChatOpened = { chatToOpen = null },
+                    answerCall = answerCall,
+                    onAnswerHandled = { answerCall = false },
                 )
             }
         }
@@ -52,7 +64,26 @@ class MainActivity : ComponentActivity() {
         readIntent(intent)
     }
 
+    private fun showOverLockScreen(on: Boolean) {
+        if (Build.VERSION.SDK_INT >= 27) {
+            setShowWhenLocked(on)
+            setTurnScreenOn(on)
+        } else {
+            @Suppress("DEPRECATION")
+            val flags = WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+            if (on) window.addFlags(flags) else window.clearFlags(flags)
+        }
+    }
+
     private fun readIntent(intent: Intent?) {
+        when (intent?.action) {
+            Notifier.ACTION_SHOW_CALL -> return showOverLockScreen(true)
+            Notifier.ACTION_ACCEPT_CALL -> {
+                showOverLockScreen(true)
+                answerCall = true
+                return
+            }
+        }
         if (intent?.action == Notifier.ACTION_OPEN_CHAT) {
             chatToOpen = intent.getStringExtra(Notifier.EXTRA_CHAT)
             return

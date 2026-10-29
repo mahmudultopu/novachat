@@ -39,6 +39,14 @@ class Notifier(private val context: Context, private val media: MediaFiles) {
                 },
             )
             nm.createNotificationChannel(
+                NotificationChannel(CHANNEL_CALLS, "Calls", NotificationManager.IMPORTANCE_HIGH).apply {
+                    description = "Incoming and ongoing voice and video calls"
+                    // NovaChat plays the ringtone and vibrates itself, for as long as the call rings.
+                    setSound(null, null)
+                    enableVibration(false)
+                },
+            )
+            nm.createNotificationChannel(
                 NotificationChannel(CHANNEL_CONNECTION, "Background connection", NotificationManager.IMPORTANCE_MIN).apply {
                     description = "Keeps NovaChat connected so messages arrive right away"
                     setShowBadge(false)
@@ -144,6 +152,74 @@ class Notifier(private val context: Context, private val media: MediaFiles) {
         return BitmapFactory.decodeFile(file.path)?.let { IconCompat.createWithBitmap(it) }
     }
 
+    /** The ringing call, over the lock screen, with Answer and Decline. */
+    fun showIncomingCall(callerName: String, avatarId: String?, video: Boolean) {
+        if (!canNotify()) return
+        val caller = Person.Builder().setName(callerName).setImportant(true).apply {
+            avatarIcon(avatarId)?.let { setIcon(it) }
+        }.build()
+        val show = callActivity(ACTION_SHOW_CALL, REQUEST_SHOW_CALL)
+        val notification = NotificationCompat.Builder(context, CHANNEL_CALLS)
+            .setSmallIcon(R.drawable.ic_call)
+            .setContentTitle(callerName)
+            .setContentText(if (video) "Incoming video call" else "Incoming voice call")
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setOngoing(true)
+            .setContentIntent(show)
+            .setFullScreenIntent(show, true)
+            .setStyle(
+                NotificationCompat.CallStyle.forIncomingCall(
+                    caller,
+                    callBroadcast(ACTION_DECLINE_CALL),
+                    callActivity(ACTION_ACCEPT_CALL, REQUEST_ACCEPT_CALL),
+                ).setIsVideo(video),
+            )
+            .build()
+        try {
+            manager.notify(TAG_CALL, ID_INCOMING_CALL, notification)
+        } catch (e: SecurityException) {
+            // Permission was taken away a moment ago.
+        }
+    }
+
+    fun cancelIncomingCall() {
+        manager.cancel(TAG_CALL, ID_INCOMING_CALL)
+    }
+
+    /** Shown by the call service while a call is on, with a hang-up button. */
+    fun ongoingCallNotification(name: String, video: Boolean) = NotificationCompat.Builder(context, CHANNEL_CALLS)
+        .setSmallIcon(R.drawable.ic_call)
+        .setContentTitle(name)
+        .setContentText(if (video) "Video call" else "Voice call")
+        .setCategory(NotificationCompat.CATEGORY_CALL)
+        .setOngoing(true)
+        .setSilent(true)
+        .setContentIntent(callActivity(ACTION_SHOW_CALL, REQUEST_SHOW_CALL))
+        .setStyle(
+            NotificationCompat.CallStyle.forOngoingCall(
+                Person.Builder().setName(name.ifBlank { "Call" }).build(),
+                callBroadcast(ACTION_HANG_UP),
+            ).setIsVideo(video),
+        )
+        .build()
+
+    private fun callActivity(action: String, requestCode: Int): PendingIntent = PendingIntent.getActivity(
+        context,
+        requestCode,
+        Intent(context, MainActivity::class.java)
+            .setAction(action)
+            .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+    )
+
+    private fun callBroadcast(action: String): PendingIntent = PendingIntent.getBroadcast(
+        context,
+        action.hashCode(),
+        Intent(context, NotificationActionReceiver::class.java).setAction(action),
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+    )
+
     fun connectionNotification() = NotificationCompat.Builder(context, CHANNEL_CONNECTION)
         .setSmallIcon(R.drawable.ic_logo)
         .setContentTitle("NovaChat is connected")
@@ -163,6 +239,15 @@ class Notifier(private val context: Context, private val media: MediaFiles) {
     companion object {
         const val CHANNEL_MESSAGES = "messages"
         const val CHANNEL_CONNECTION = "connection"
+        const val CHANNEL_CALLS = "calls"
+        const val ACTION_SHOW_CALL = "app.novachat.SHOW_CALL"
+        const val ACTION_ACCEPT_CALL = "app.novachat.ACCEPT_CALL"
+        const val ACTION_DECLINE_CALL = "app.novachat.DECLINE_CALL"
+        const val ACTION_HANG_UP = "app.novachat.HANG_UP"
+        private const val TAG_CALL = "call"
+        private const val ID_INCOMING_CALL = 1
+        private const val REQUEST_SHOW_CALL = 101
+        private const val REQUEST_ACCEPT_CALL = 102
         const val ACTION_OPEN_CHAT = "app.novachat.OPEN_CHAT"
         const val ACTION_REPLY = "app.novachat.REPLY"
         const val ACTION_MARK_READ = "app.novachat.MARK_READ"

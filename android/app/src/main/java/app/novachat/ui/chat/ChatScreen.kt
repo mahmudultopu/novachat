@@ -28,6 +28,8 @@ import androidx.compose.ui.res.painterResource
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import app.novachat.R
+import app.novachat.ui.call.CallLogRow
+import app.novachat.ui.call.rememberCallStarter
 import app.novachat.data.AttachmentKind
 import app.novachat.data.MediaException
 import app.novachat.data.PreparedMedia
@@ -197,6 +199,17 @@ fun ChatScreen(peerId: String, onBack: () -> Unit, openInfo: (isGroup: Boolean) 
         val u = cameraUri
         if (ok && u != null) sendPrepared { repo.media.preparePhoto(Uri.parse(u)) }
     }
+    fun openCamera() {
+        val file = File(context.cacheDir, "camera").apply { mkdirs() }.let { File(it, "${System.currentTimeMillis()}.jpg") }
+        val uri = FileProvider.getUriForFile(context, context.packageName + ".files", file)
+        cameraUri = uri.toString()
+        takePicture.launch(uri)
+    }
+    // NovaChat holds the camera permission for video calls, so Android asks for it here too.
+    val cameraPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) openCamera() else toast("NovaChat needs the camera to take photos")
+    }
+    val startCall = rememberCallStarter()
     val openDocument = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) sendPrepared { repo.media.prepareDocument(uri) }
     }
@@ -261,10 +274,8 @@ fun ChatScreen(peerId: String, onBack: () -> Unit, openInfo: (isGroup: Boolean) 
                 }
                 AttachOption(R.drawable.ic_camera, "Camera", MaterialTheme.colorScheme.secondary) {
                     showAttach = false
-                    val file = File(context.cacheDir, "camera").apply { mkdirs() }.let { File(it, "${System.currentTimeMillis()}.jpg") }
-                    val uri = FileProvider.getUriForFile(context, context.packageName + ".files", file)
-                    cameraUri = uri.toString()
-                    takePicture.launch(uri)
+                    val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+                    if (granted) openCamera() else cameraPermission.launch(Manifest.permission.CAMERA)
                 }
                 AttachOption(R.drawable.ic_document, "Document", Color(0xFFF29B38)) {
                     showAttach = false
@@ -311,6 +322,16 @@ fun ChatScreen(peerId: String, onBack: () -> Unit, openInfo: (isGroup: Boolean) 
                         }
                     }
                 },
+                actions = {
+                    if (group == null) {
+                        IconButton(onClick = { startCall(peerId, true) }) {
+                            Icon(painterResource(R.drawable.ic_videocam), "Video call")
+                        }
+                        IconButton(onClick = { startCall(peerId, false) }) {
+                            Icon(painterResource(R.drawable.ic_call), "Voice call")
+                        }
+                    }
+                },
             )
         },
         containerColor = MaterialTheme.colorScheme.background,
@@ -333,6 +354,10 @@ fun ChatScreen(peerId: String, onBack: () -> Unit, openInfo: (isGroup: Boolean) 
                 items(shown, key = { it.senderId + it.clientId }) { m ->
                     if (m.system) {
                         SystemNotice(systemText(m, myId, people))
+                        return@items
+                    }
+                    m.callLog?.let { log ->
+                        CallLogRow(m, log, mine = m.senderId == myId, onCallBack = { startCall(peerId, log.video) })
                         return@items
                     }
                     val quoted = m.replyTo?.let { byRef[it] }

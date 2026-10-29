@@ -17,6 +17,7 @@ import androidx.room.Upsert
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import app.novachat.data.Attachment
+import app.novachat.data.CallLog
 import app.novachat.data.ChatMessage
 import app.novachat.data.Group
 import app.novachat.data.GroupMember
@@ -76,6 +77,8 @@ data class MessageEntity(
     /** Hidden per-member copy of the group message with this client ID. */
     val parentClientId: String? = null,
     @ColumnInfo(defaultValue = "0") val system: Boolean = false,
+    /** A finished call: [CallLog] as JSON. */
+    val callLog: String? = null,
 ) {
     fun toChatMessage() = ChatMessage(
         clientId = clientId,
@@ -99,6 +102,7 @@ data class MessageEntity(
         starred = starred,
         groupId = groupId,
         system = system,
+        callLog = callLog?.let { runCatching { NovaJson.decodeFromString<CallLog>(it) }.getOrNull() },
     )
 }
 
@@ -295,6 +299,17 @@ abstract class ChatDao {
 
     @Query("UPDATE messages SET localPath = :path WHERE senderId = :senderId AND clientId = :clientId")
     abstract suspend fun setLocalPath(senderId: String, clientId: String, path: String)
+
+    /** Call offers to [peerId] that never reached the server. */
+    @Query(
+        """DELETE FROM messages WHERE senderId = :me AND peerId = :peerId AND id IS NULL
+           AND control LIKE '%"call":%' AND control LIKE '%"type":"offer"%'""",
+    )
+    abstract suspend fun deleteUnsentCallOffers(me: String, peerId: String)
+
+    /** Recent calls, newest first, for the Calls tab. */
+    @Query("SELECT * FROM messages WHERE callLog IS NOT NULL AND deleted = 0 ORDER BY createdAtMillis DESC LIMIT 200")
+    abstract fun callLogs(): Flow<List<MessageEntity>>
 
     @Query("SELECT * FROM messages WHERE starred = 1 ORDER BY createdAtMillis DESC")
     abstract fun starred(): Flow<List<MessageEntity>>
@@ -493,7 +508,7 @@ abstract class ChatDao {
  */
 @Database(
     entities = [MessageEntity::class, UserEntity::class, MetaEntity::class, SessionEntity::class, PreKeyEntity::class, GroupEntity::class, StatusEntity::class],
-    version = 7,
+    version = 8,
     exportSchema = false,
 )
 abstract class ChatDatabase : RoomDatabase() {
@@ -568,9 +583,15 @@ abstract class ChatDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE messages ADD COLUMN callLog TEXT")
+            }
+        }
+
         fun open(context: Context): ChatDatabase =
             Room.databaseBuilder(context, ChatDatabase::class.java, "novachat.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
                 .build()
     }
 }

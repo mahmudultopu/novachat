@@ -1,12 +1,6 @@
 package app.novachat.ui.home
 
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Settings
@@ -22,14 +16,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.dp
 import app.novachat.R
+import app.novachat.ui.call.CallsScreen
 import app.novachat.ui.chats.ChatsScreen
 import app.novachat.ui.settings.SettingsScreen
 import app.novachat.ui.status.StatusScreen
@@ -77,23 +69,8 @@ fun HomeScreen(
         when (selected) {
             0 -> ChatsScreen(openChat = openChat, openNewGroup = openNewGroup, openJoin = openJoin, modifier = modifier)
             1 -> StatusScreen(openViewer = openStatus, openTextComposer = openTextStatus, modifier = modifier)
-            2 -> ComingSoon("Calls", "End-to-end encrypted voice and video calls are next on the roadmap.", modifier)
+            2 -> CallsScreen(openChat = openChat, modifier = modifier)
             else -> SettingsScreen(openProfile = openProfile, openStarred = openStarred, modifier = modifier)
         }
-    }
-}
-
-@Composable
-private fun ComingSoon(title: String, text: String, modifier: Modifier) {
-    Column(
-        modifier.fillMaxSize().padding(32.dp),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Icon(painterResource(R.drawable.ic_status), null, Modifier.size(40.dp), tint = MaterialTheme.colorScheme.primary)
-        Spacer(Modifier.height(16.dp))
-        Text(title, style = MaterialTheme.typography.titleLarge)
-        Spacer(Modifier.height(8.dp))
-        Text(text, textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }

@@ -30,6 +30,7 @@ import app.novachat.NovaChatApp
 import app.novachat.SessionState
 import app.novachat.ui.auth.AuthFlow
 import app.novachat.ui.auth.ProfileSetupScreen
+import app.novachat.ui.call.CallScreen
 import app.novachat.ui.chat.ChatScreen
 import app.novachat.ui.chat.ContactInfoScreen
 import app.novachat.ui.home.HomeScreen
@@ -47,6 +48,8 @@ fun NovaChatRoot(
     onInviteShown: () -> Unit = {},
     chatToOpen: String? = null,
     onChatOpened: () -> Unit = {},
+    answerCall: Boolean = false,
+    onAnswerHandled: () -> Unit = {},
 ) {
     val container = appContainer()
     val state by container.session.collectAsStateWithLifecycle()
@@ -56,7 +59,16 @@ fun NovaChatRoot(
         }
         SessionState.SignedOut -> AuthFlow()
         is SessionState.SignedIn ->
-            if (s.session.user.name.isBlank()) ProfileSetupScreen(s.session) else MainNav(inviteLink, onInviteShown, chatToOpen, onChatOpened)
+            if (s.session.user.name.isBlank()) {
+                ProfileSetupScreen(s.session)
+            } else {
+                Box(Modifier.fillMaxSize()) {
+                    MainNav(inviteLink, onInviteShown, chatToOpen, onChatOpened)
+                    // A call covers everything else until it ends.
+                    val call by container.calls.state.collectAsStateWithLifecycle()
+                    call?.let { CallScreen(it, answerCall, onAnswerHandled) }
+                }
+            }
     }
 }
 

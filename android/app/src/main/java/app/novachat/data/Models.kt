@@ -99,6 +99,8 @@ data class ChatMessage(
     val groupId: String? = null,
     /** A group event such as "Ana added Ben"; [body] is a [GroupEvent] as JSON. */
     val system: Boolean = false,
+    /** A finished voice or video call. */
+    val callLog: CallLog? = null,
 ) {
     val ref: MessageRef get() = MessageRef(senderId, clientId)
 
@@ -223,11 +225,53 @@ data class MessageContent(
     val status: StatusPost? = null,
     @SerialName("status_seen") val statusSeen: String? = null,
     @SerialName("status_delete") val statusDelete: String? = null,
+    /** Calls: setting one up (hidden), and the "Missed voice call" line afterwards. */
+    val call: CallSignal? = null,
+    @SerialName("call_log") val callLog: CallLog? = null,
 ) {
     val isControl: Boolean
         get() = reaction != null || edit != null || delete != null ||
-            status != null || statusSeen != null || statusDelete != null
+            status != null || statusSeen != null || statusDelete != null || call != null
 }
+
+/**
+ * One step of setting up a call, sent end-to-end encrypted like a message.
+ * [type] is "offer" and "answer" (with [sdp], WebRTC's description of the
+ * connection including its encryption fingerprint), "ringing", "decline",
+ * "busy", "end", or "video" when someone turns their camera on or off.
+ */
+@Serializable
+data class CallSignal(
+    val id: String,
+    val type: String,
+    val video: Boolean = false,
+    val sdp: String? = null,
+)
+
+/** A finished call as a line in the chat. The caller sends it to both phones. */
+@Serializable
+data class CallLog(
+    val video: Boolean = false,
+    /** "answered", "missed" (no answer), "declined" or "busy". */
+    val outcome: String,
+    @SerialName("duration_s") val durationSec: Int = 0,
+) {
+    val missed: Boolean get() = outcome != "answered"
+}
+
+/** A call signal from [from], with when the server received it. */
+data class IncomingCallSignal(val from: String, val signal: CallSignal, val sentAtMillis: Long)
+
+/** A STUN or TURN server for calls, from GET /v1/calls/ice. */
+@Serializable
+data class IceServerDto(
+    val urls: List<String>,
+    val username: String? = null,
+    val credential: String? = null,
+)
+
+@Serializable
+data class IceServersResponse(@SerialName("ice_servers") val iceServers: List<IceServerDto> = emptyList())
 
 /**
  * A status update as it travels: encrypted to each viewer like a message.

@@ -317,6 +317,35 @@ sender's name.
   it is connected in the background.
 * The service starts again after the phone restarts.
 
+### Voice and video calls
+
+Open a one-to-one chat and tap the phone (voice) or camera (video) button at
+the top. The **Calls** tab lists recent calls; tap the button on a row to call
+back. During a call you can mute, switch to the speaker, turn your camera on
+or off, and flip between cameras. A finished call shows up in the chat as
+"Voice call · 2:31" or "Missed voice call".
+
+* Calls go straight between the two phones with WebRTC. Audio and video are
+  encrypted by WebRTC (DTLS-SRTP), and the offer and answer that set up those
+  keys travel as end-to-end encrypted messages (`MessageContent.call`), so the
+  server can't listen in or swap the keys.
+* Incoming calls ring with the phone's ringtone and show over the lock screen,
+  as long as **Settings → Instant notifications** is on.
+* The app asks the server for STUN/TURN servers (`GET /v1/calls/ice`). STUN
+  (Google's, by default) is enough when the phones can reach each other, such
+  as on most Wi-Fi. On some mobile networks a **TURN relay** is needed. The
+  relay only passes on packets that are already encrypted. To add one, set
+  these on the Render service (**Environment**):
+  * Cloudflare's TURN service: `NOVACHAT_CLOUDFLARE_TURN_KEY_ID` and
+    `NOVACHAT_CLOUDFLARE_TURN_TOKEN`, from the Cloudflare dashboard under
+    **Realtime → TURN Server → Create**. It's free for the first 1,000 GB a
+    month.
+  * Or your own coturn server: `NOVACHAT_TURN_URLS` (such as
+    `turn:turn.example.com:3478`) and `NOVACHAT_TURN_SECRET`, its
+    `static-auth-secret`.
+* Calls need the native WebRTC library, built only for ARM phones to keep the
+  app small. PC emulators with ARM translation still run it.
+
 ### API
 
 | Method and path | Auth | Purpose |
@@ -345,6 +374,7 @@ sender's name.
 | `POST`, `DELETE /v1/groups/{id}/invite` | Admin | Reset or turn off the invite link |
 | `GET /v1/invites/{code}`, `POST /v1/invites/{code}/join` | Bearer | Preview and join from a link |
 | `GET /join/{code}` | – | Invite page that opens the app |
+| `GET /v1/calls/ice` | Bearer | STUN/TURN servers for calls |
 | `GET /v1/ws` | Bearer | Realtime WebSocket |
 
 ### WebSocket frames (JSON)
@@ -412,5 +442,6 @@ Following the builder guide, in order:
 7. ~~**Status updates**~~ (done in 0.8.0), see [Status updates](#status-updates).
 8. ~~**Notifications**~~ (done in 0.9.0): quick reply and mark as read, see
    [Notifications](#notifications).
-9. **Voice and video calls** (WebRTC + LiveKit + coturn).
+9. ~~**Voice and video calls**~~ (done in 0.10.0): one-to-one, see
+   [Voice and video calls](#voice-and-video-calls). Group calls come next.
 10. A real **SMS provider** for production sign-up, and deployment.

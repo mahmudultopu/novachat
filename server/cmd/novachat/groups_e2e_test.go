@@ -40,7 +40,7 @@ func testServer(t *testing.T) string {
 	ropts, _ := redis.ParseURL(redisURL)
 	rdb := redis.NewClient(ropts)
 	t.Cleanup(func() { rdb.Close() })
-	handler, closeHub := NewHandler(ctx, config.Config{Env: "dev", DevOTP: "123456"}, pool, rdb)
+	handler, closeHub := NewHandler(ctx, config.Config{Env: "dev", DevOTP: "123456", STUNURLs: []string{"stun:stun.example.com:3478"}}, pool, rdb)
 	t.Cleanup(closeHub)
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
