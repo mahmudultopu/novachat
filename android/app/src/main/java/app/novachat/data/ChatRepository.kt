@@ -1,6 +1,12 @@
 package app.novachat.data
 
+import app.novachat.data.local.ChatDao
+import app.novachat.data.local.MessageEntity
+import app.novachat.data.local.MetaEntity
+import app.novachat.data.local.UserEntity
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -9,9 +15,13 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -20,25 +30,22 @@ import java.time.OffsetDateTime
 import java.util.UUID
 
 /**
- * Holds the signed-in user's chats in memory and keeps them in step with the
- * server: catches up through /v1/sync after every (re)connect, applies live
- * frames, and resends messages that were typed while offline.
- *
- * Next step: persist to an encrypted Room database so chats open instantly
- * and survive restarts (see the guide's realtime messaging section).
+ * Keeps the signed-in user's chats in the on-phone database and in step with
+ * the server: catches up through /v1/sync after every (re)connect, applies
+ * live frames, and resends messages that were typed while offline. The UI
+ * reads straight from the database, so chats open instantly, even offline.
  */
 class ChatRepository(
     private val api: ApiClient,
     private val socket: ChatSocket,
+    private val dao: ChatDao,
     private val scope: CoroutineScope,
 ) {
     private var session: Session? = null
     private var jobs = emptyList<Job>()
-    private var lastSeq = 0L
+    /** Serialises database writes that read-modify-write, such as sync. */
+    private val writeLock = Mutex()
 
-    /** Messages keyed by the other person's user ID, oldest first. */
-    private val messages = MutableStateFlow<Map<String, List<ChatMessage>>>(emptyMap())
-    private val users = MutableStateFlow<Map<String, User>>(emptyMap())
     /** Who is typing to us right now, with when their indicator expires. */
     private val typing = MutableStateFlow<Map<String, Long>>(emptyMap())
     private var openPeer: String? = null
@@ -48,21 +55,27 @@ class ChatRepository(
 
     val connection: StateFlow<ConnectionState> = socket.state
 
-    val conversations: Flow<List<Conversation>> = combine(messages, users) { byPeer, people ->
-        val me = session?.user?.id
-        byPeer.mapNotNull { (peerId, list) ->
-            val last = list.lastOrNull() ?: return@mapNotNull null
+    private val myId = MutableStateFlow<String?>(null)
+
+    val conversations: Flow<List<Conversation>> = combine(
+        dao.lastMessages(),
+        myId.flatMapUnread(),
+        dao.users(),
+    ) { last, unread, people ->
+        val names = people.associateBy { it.id }
+        last.map { m ->
             Conversation(
-                peer = people[peerId] ?: User(id = peerId, phone = "…"),
-                lastMessage = last,
-                unread = list.count { it.senderId != me && it.readAt == null },
+                peer = names[m.peerId]?.toUser() ?: User(id = m.peerId, phone = "…"),
+                lastMessage = m.toChatMessage(),
+                unread = unread[m.peerId] ?: 0,
             )
-        }.sortedByDescending { it.lastMessage.createdAtMillis }
+        }.sortedByDescending { it.lastMessage.id ?: Long.MAX_VALUE }
     }
 
-    fun messagesWith(peerId: String): Flow<List<ChatMessage>> = messages.map { it[peerId].orEmpty() }
+    fun messagesWith(peerId: String): Flow<List<ChatMessage>> =
+        dao.messagesWith(peerId).map { list -> list.map { it.toChatMessage() } }
 
-    fun user(peerId: String): Flow<User?> = users.map { it[peerId] }
+    fun user(peerId: String): Flow<User?> = dao.user(peerId).map { it?.toUser() }
 
     fun isTyping(peerId: String): Flow<Boolean> = typing.map { peerId in it }
 
@@ -72,55 +85,80 @@ class ChatRepository(
             session = newSession
             return
         }
-        stop()
+        stop(clearData = false)
         session = newSession
+        myId.value = newSession.user.id
         jobs = listOf(
-            scope.launch { socket.frames.collect(::onFrame) },
+            scope.launch {
+                // Another account used this phone before: start from a clean slate.
+                writeLock.withLock {
+                    if (dao.meta(OWNER) != newSession.user.id) {
+                        dao.clear()
+                        dao.putMeta(MetaEntity(OWNER, newSession.user.id))
+                    }
+                }
+                // Subscribe to frames before connecting so "ready" is never missed.
+                launch(start = CoroutineStart.UNDISPATCHED) { socket.frames.collect(::onFrame) }
+                connectIfCurrent(newSession)
+            },
             scope.launch {
                 socket.state.collect { if (it == ConnectionState.Unauthorized) _unauthorized.tryEmit(Unit) }
             },
         )
-        socket.connect(newSession.serverUrl, newSession.token)
     }
 
     @Synchronized
-    fun stop() {
+    private fun connectIfCurrent(s: Session) {
+        if (session?.token == s.token) socket.connect(s.serverUrl, s.token)
+    }
+
+    /** Disconnects. [clearData] also wipes the chats stored on this phone (log out). */
+    @Synchronized
+    fun stop(clearData: Boolean) {
         jobs.forEach { it.cancel() }
         jobs = emptyList()
         socket.disconnect()
         session = null
-        lastSeq = 0
-        messages.value = emptyMap()
-        users.value = emptyMap()
+        myId.value = null
         typing.value = emptyMap()
+        if (clearData) scope.launch { writeLock.withLock { dao.clear() } }
     }
 
     /** Finds a NovaChat user by phone number and remembers them. */
     suspend fun findByPhone(phone: String): User {
         val s = session ?: error("not signed in")
-        return api.userByPhone(s, phone).also { u -> users.update { it + (u.id to u) } }
+        return api.userByPhone(s, phone).also { dao.upsertUser(it.toEntity()) }
     }
 
     fun send(peerId: String, text: String) {
         val s = session ?: return
         val body = text.trim()
         if (body.isEmpty()) return
-        val msg = ChatMessage(
+        val msg = MessageEntity(
+            senderId = s.user.id,
             clientId = UUID.randomUUID().toString(),
             id = null,
-            senderId = s.user.id,
             recipientId = peerId,
+            peerId = peerId,
             body = body,
             createdAtMillis = System.currentTimeMillis(),
+            deliveredAt = null,
+            readAt = null,
+            failed = false,
         )
-        messages.update { it + (peerId to (it[peerId].orEmpty() + msg)) }
-        transmit(msg)
+        scope.launch {
+            dao.upsertMessages(listOf(msg))
+            transmit(msg)
+        }
     }
 
-    fun retry(peerId: String, clientId: String) {
-        val msg = messages.value[peerId]?.firstOrNull { it.clientId == clientId } ?: return
-        replace(peerId, msg.copy(failed = false))
-        transmit(msg)
+    fun retry(clientId: String) {
+        val me = session?.user?.id ?: return
+        scope.launch {
+            val msg = dao.message(me, clientId) ?: return@launch
+            dao.setFailed(me, clientId, false)
+            transmit(msg)
+        }
     }
 
     fun sendTyping(peerId: String) {
@@ -130,23 +168,18 @@ class ChatRepository(
     /** Call while a chat is on screen; incoming messages there are marked read. */
     fun setOpenChat(peerId: String?) {
         openPeer = peerId
-        if (peerId != null) markRead(peerId)
+        if (peerId != null) scope.launch { markRead(peerId) }
     }
 
-    private fun markRead(peerId: String) {
+    private suspend fun markRead(peerId: String) {
         val me = session?.user?.id ?: return
-        val unread = messages.value[peerId].orEmpty().filter { it.senderId != me && it.readAt == null && it.id != null }
-        if (unread.isEmpty()) return
-        if (sendReceipt("read", unread.mapNotNull { it.id })) {
-            val now = OffsetDateTime.now().toString()
-            val ids = unread.map { it.clientId }.toSet()
-            messages.update { all ->
-                all + (peerId to all[peerId].orEmpty().map { if (it.clientId in ids) it.copy(readAt = now) else it })
-            }
+        val unread = dao.unreadIds(peerId, me)
+        if (unread.isNotEmpty() && sendReceipt("read", unread)) {
+            dao.markRead(unread, OffsetDateTime.now().toString())
         }
     }
 
-    private fun transmit(msg: ChatMessage) {
+    private fun transmit(msg: MessageEntity) {
         socket.send(
             buildJsonObject {
                 put("type", "send")
@@ -177,20 +210,20 @@ class ChatRepository(
                     typing.update { all -> all.filterValues { it > System.currentTimeMillis() } }
                 }
             }
-            "error" -> frame.clientId?.let { cid ->
-                messages.value.forEach { (peer, list) ->
-                    list.firstOrNull { it.clientId == cid }?.let { replace(peer, it.copy(failed = true)) }
-                }
+            "error" -> {
+                val me = session?.user?.id
+                val cid = frame.clientId
+                if (me != null && cid != null) dao.setFailed(me, cid, true)
             }
         }
     }
 
-    /** Pulls everything since the last seen message, then resends pending ones. */
+    /** Pulls everything since the newest stored message, then resends pending ones. */
     private suspend fun catchUp() {
         val s = session ?: return
         try {
             while (true) {
-                val page = api.sync(s, lastSeq, SYNC_PAGE)
+                val page = api.sync(s, dao.lastSeq() ?: 0L, SYNC_PAGE)
                 applyMessages(page)
                 if (page.size < SYNC_PAGE) break
             }
@@ -198,73 +231,60 @@ class ChatRepository(
             if (e.status == 401) _unauthorized.tryEmit(Unit)
             return
         }
-        messages.value.values.flatten().filter { it.status == DeliveryStatus.Pending }.forEach(::transmit)
+        dao.pending(s.user.id).forEach(::transmit)
     }
 
     private suspend fun applyMessages(dtos: List<MessageDto>) {
         val s = session ?: return
         val me = s.user.id
         if (dtos.isEmpty()) return
-        messages.update { current ->
-            val next = current.toMutableMap()
-            for (dto in dtos) {
-                val peer = if (dto.senderId == me) dto.recipientId else dto.senderId
-                val incoming = dto.toChatMessage()
-                val list = next[peer].orEmpty()
-                val i = list.indexOfFirst { it.clientId == dto.clientId && it.senderId == dto.senderId }
-                next[peer] = if (i >= 0) {
-                    list.toMutableList().also { it[i] = incoming }
-                } else {
-                    list + incoming
-                }.sortedWith(compareBy<ChatMessage> { it.id ?: Long.MAX_VALUE }.thenBy { it.createdAtMillis })
-            }
-            next
+        writeLock.withLock {
+            dao.upsertMessages(dtos.map { it.toEntity(me) })
         }
-        lastSeq = maxOf(lastSeq, dtos.maxOf { it.id })
 
         // Tell senders their messages reached this phone, and mark the open chat read.
         sendReceipt("delivered", dtos.filter { it.recipientId == me && it.senderId != me && it.deliveredAt == null }.map { it.id })
-        openPeer?.let(::markRead)
+        openPeer?.let { markRead(it) }
 
-        val unknown = dtos.flatMap { listOf(it.senderId, it.recipientId) }.toSet() - users.value.keys - me
+        val unknown = dtos.flatMap { listOf(it.senderId, it.recipientId) }.toSet() - dao.userIds().toSet() - me
         for (id in unknown) {
-            runCatching { api.user(s, id) }.getOrNull()?.let { u -> users.update { it + (u.id to u) } }
+            runCatching { api.user(s, id) }.getOrNull()?.let { dao.upsertUser(it.toEntity()) }
         }
     }
 
-    private fun applyReceipt(frame: ServerFrame) {
-        val ids = frame.messageIds.toSet()
+    private suspend fun applyReceipt(frame: ServerFrame) {
+        if (frame.messageIds.isEmpty()) return
         val at = frame.at ?: OffsetDateTime.now().toString()
-        val read = frame.status == "read"
-        messages.update { all ->
-            all.mapValues { (_, list) ->
-                list.map { m ->
-                    if (m.id in ids) m.copy(deliveredAt = m.deliveredAt ?: at, readAt = if (read) at else m.readAt) else m
-                }
-            }
-        }
+        if (frame.status == "read") dao.markRead(frame.messageIds, at) else dao.markDelivered(frame.messageIds, at)
     }
 
-    private fun replace(peerId: String, msg: ChatMessage) {
-        messages.update { all ->
-            all + (peerId to all[peerId].orEmpty().map { if (it.clientId == msg.clientId) msg else it })
-        }
-    }
-
-    private fun MessageDto.toChatMessage() = ChatMessage(
+    private fun MessageDto.toEntity(me: String) = MessageEntity(
+        senderId = senderId,
         clientId = clientId,
         id = id,
-        senderId = senderId,
         recipientId = recipientId,
+        peerId = if (senderId == me) recipientId else senderId,
         body = body,
         createdAtMillis = runCatching { OffsetDateTime.parse(createdAt).toInstant().toEpochMilli() }
             .getOrDefault(System.currentTimeMillis()),
         deliveredAt = deliveredAt,
         readAt = readAt,
+        failed = false,
     )
+
+    private fun User.toEntity() = UserEntity(id = id, phone = phone, name = name, about = about)
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private fun Flow<String?>.flatMapUnread(): Flow<Map<String, Int>> = flatMapLatest { me ->
+        if (me == null) {
+            flowOf(emptyMap())
+        } else { dao.unreadCounts(me).map { list -> list.associate { it.peerId to it.unread } }
+        }
+    }
 
     private companion object {
         const val SYNC_PAGE = 500
         const val TYPING_MS = 4_000L
+        const val OWNER = "owner_user_id"
     }
 }

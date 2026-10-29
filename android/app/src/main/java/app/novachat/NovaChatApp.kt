@@ -6,6 +6,7 @@ import app.novachat.data.ChatRepository
 import app.novachat.data.ChatSocket
 import app.novachat.data.Session
 import app.novachat.data.SessionStore
+import app.novachat.data.local.ChatDatabase
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -46,7 +47,8 @@ class AppContainer(app: Application) {
 
     val sessionStore = SessionStore(app)
     val api = ApiClient(http)
-    val chats = ChatRepository(api, ChatSocket(http, scope), scope)
+    val database = ChatDatabase.open(app)
+    val chats = ChatRepository(api, ChatSocket(http, scope), database.chats(), scope)
 
     val session: StateFlow<SessionState> = sessionStore.session
         .map { if (it == null) SessionState.SignedOut else SessionState.SignedIn(it) }
@@ -57,7 +59,7 @@ class AppContainer(app: Application) {
             session.collect { state ->
                 when (state) {
                     is SessionState.SignedIn -> chats.start(state.session)
-                    SessionState.SignedOut -> chats.stop()
+                    SessionState.SignedOut -> chats.stop(clearData = true)
                     SessionState.Loading -> Unit
                 }
             }

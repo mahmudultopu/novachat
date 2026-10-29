@@ -127,7 +127,7 @@ fun ChatScreen(peerId: String, onBack: () -> Unit) {
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 items(messages.asReversed(), key = { it.senderId + it.clientId }) { m ->
-                    Bubble(m, mine = m.senderId == myId, onRetry = { repo.retry(peerId, m.clientId) })
+                    Bubble(m, mine = m.senderId == myId, onRetry = { repo.retry(m.clientId) })
                 }
             }
             MessageComposer(

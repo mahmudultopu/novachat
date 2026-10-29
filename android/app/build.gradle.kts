@@ -3,6 +3,7 @@ plugins {
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
+    alias(libs.plugins.ksp)
 }
 
 val serverUrl = providers.gradleProperty("novachat.serverUrl").getOrElse("http://10.0.2.2:8080")
@@ -15,9 +16,21 @@ android {
         applicationId = "app.novachat"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
         buildConfigField("String", "DEFAULT_SERVER_URL", "\"$serverUrl\"")
+    }
+
+    signingConfigs {
+        // A shared debug key (password "android"), so every test build from
+        // CI installs over the previous one and keeps your chats. Release
+        // builds get their own private key before going to the Play Store.
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
     }
 
     buildTypes {
@@ -56,5 +69,8 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.androidx.room.runtime)
+    implementation(libs.androidx.room.ktx)
+    ksp(libs.androidx.room.compiler)
     debugImplementation(libs.androidx.compose.ui.tooling)
 }
