@@ -97,7 +97,8 @@ func (s *Store) SetAvatar(ctx context.Context, userID string, jpeg []byte) (User
 
 // RemoveAvatar deletes the user's profile photo.
 func (s *Store) RemoveAvatar(ctx context.Context, userID string) (User, error) {
-	if _, err := s.DB.Exec(ctx, `DELETE FROM avatars WHERE user_id = $1`, userID); err != nil {
+	// Only the profile photo: the same table also holds group photos this user set.
+	if _, err := s.DB.Exec(ctx, `DELETE FROM avatars WHERE id = (SELECT avatar_id FROM users WHERE id = $1)`, userID); err != nil {
 		return User{}, err
 	}
 	return s.UserByID(ctx, userID)

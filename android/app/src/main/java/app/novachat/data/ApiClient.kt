@@ -4,6 +4,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.jsonObject
@@ -73,6 +75,61 @@ class ApiClient(private val http: OkHttpClient) {
 
     suspend fun user(session: Session, id: String): User =
         call(session.serverUrl, "GET", "/v1/users/$id", session.token, null)
+
+    suspend fun createGroup(session: Session, name: String, members: List<String>): GroupDto =
+        call(session.serverUrl, "POST", "/v1/groups", session.token, buildJsonObject {
+            put("name", name)
+            put("members", JsonArray(members.map { JsonPrimitive(it) }))
+        })
+
+    suspend fun groups(session: Session): List<GroupDto> =
+        call(session.serverUrl, "GET", "/v1/groups", session.token, null)
+
+    suspend fun group(session: Session, id: String): GroupDto =
+        call(session.serverUrl, "GET", "/v1/groups/$id", session.token, null)
+
+    suspend fun updateGroup(session: Session, id: String, changes: JsonObject): GroupDto =
+        call(session.serverUrl, "PATCH", "/v1/groups/$id", session.token, changes)
+
+    suspend fun setGroupAvatar(session: Session, id: String, jpeg: ByteArray): GroupDto = withContext(Dispatchers.IO) {
+        val request = Request.Builder()
+            .url(session.serverUrl.trimEnd('/') + "/v1/groups/$id/avatar")
+            .header("Authorization", "Bearer ${session.token}")
+            .put(jpeg.toRequestBody("image/jpeg".toMediaType()))
+            .build()
+        execute(request) { NovaJson.decodeFromString<GroupDto>(it.body!!.string()) }
+    }
+
+    suspend fun removeGroupAvatar(session: Session, id: String): GroupDto =
+        call(session.serverUrl, "DELETE", "/v1/groups/$id/avatar", session.token, null)
+
+    suspend fun addGroupMembers(session: Session, id: String, userIds: List<String>): GroupDto =
+        call(session.serverUrl, "POST", "/v1/groups/$id/members", session.token, buildJsonObject {
+            put("user_ids", JsonArray(userIds.map { JsonPrimitive(it) }))
+        })
+
+    suspend fun removeGroupMember(session: Session, id: String, userId: String): GroupDto =
+        call(session.serverUrl, "DELETE", "/v1/groups/$id/members/$userId", session.token, null)
+
+    /** Leaving answers with no content: you can no longer see the group. */
+    suspend fun leaveGroup(session: Session, id: String) {
+        call<Unit>(session.serverUrl, "DELETE", "/v1/groups/$id/members/${session.user.id}", session.token, null)
+    }
+
+    suspend fun setGroupRole(session: Session, id: String, userId: String, role: String): GroupDto =
+        call(session.serverUrl, "PUT", "/v1/groups/$id/members/$userId", session.token, buildJsonObject { put("role", role) })
+
+    suspend fun resetInvite(session: Session, id: String): GroupDto =
+        call(session.serverUrl, "POST", "/v1/groups/$id/invite", session.token, null)
+
+    suspend fun revokeInvite(session: Session, id: String): GroupDto =
+        call(session.serverUrl, "DELETE", "/v1/groups/$id/invite", session.token, null)
+
+    suspend fun previewInvite(session: Session, code: String): InvitePreview =
+        call(session.serverUrl, "GET", "/v1/invites/$code", session.token, null)
+
+    suspend fun joinInvite(session: Session, code: String): GroupDto =
+        call(session.serverUrl, "POST", "/v1/invites/$code/join", session.token, null)
 
     suspend fun sync(session: Session, after: Long, limit: Int): List<MessageDto> =
         call(session.serverUrl, "GET", "/v1/sync", session.token, null,

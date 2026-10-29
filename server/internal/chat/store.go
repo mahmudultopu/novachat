@@ -23,6 +23,8 @@ type Message struct {
 	CreatedAt   time.Time  `json:"created_at"`
 	DeliveredAt *time.Time `json:"delivered_at"`
 	ReadAt      *time.Time `json:"read_at"`
+	// GroupID marks a group event written by the server; Body is its JSON.
+	GroupID *string `json:"group_id,omitempty"`
 }
 
 type Conversation struct {
@@ -37,11 +39,11 @@ type Store struct {
 	DB *pgxpool.Pool
 }
 
-const msgCols = `id, client_id::text, sender_id::text, recipient_id::text, body, envelope, created_at, delivered_at, read_at`
+const msgCols = `id, client_id::text, sender_id::text, recipient_id::text, body, envelope, created_at, delivered_at, read_at, group_id::text`
 
 func scanMessage(row pgx.Row) (Message, error) {
 	var m Message
-	err := row.Scan(&m.ID, &m.ClientID, &m.SenderID, &m.RecipientID, &m.Body, &m.Envelope, &m.CreatedAt, &m.DeliveredAt, &m.ReadAt)
+	err := row.Scan(&m.ID, &m.ClientID, &m.SenderID, &m.RecipientID, &m.Body, &m.Envelope, &m.CreatedAt, &m.DeliveredAt, &m.ReadAt, &m.GroupID)
 	return m, err
 }
 
@@ -85,6 +87,21 @@ func (s *Store) Insert(ctx context.Context, senderID, clientID, recipientID, bod
 	return m, false, err
 }
 
+// Querier runs SQL on the pool or inside a transaction.
+type Querier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
+// InsertEvents writes one group event (body is its JSON) to every recipient,
+// as from actorID. Each copy is an ordinary message, so phones that are
+// offline get it through /v1/sync in order with the chat.
+func InsertEvents(ctx context.Context, q Querier, groupID, actorID string, recipients []string, body string) ([]Message, error) {
+	return collectMessages(q.Query(ctx, `
+		INSERT INTO messages (client_id, sender_id, recipient_id, body, group_id)
+		SELECT gen_random_uuid(), $1, r, $2, $3 FROM unnest($4::uuid[]) AS r
+		RETURNING `+msgCols, actorID, body, groupID, recipients))
+}
+
 // MarkReceipts records that the recipient's device got ("delivered") or
 // opened ("read") messages. Only messages addressed to recipientID change.
 // It returns the messages that changed so their senders can be told.
@@ -105,7 +122,7 @@ func (s *Store) MarkReceipts(ctx context.Context, recipientID string, ids []int6
 func (s *Store) Sync(ctx context.Context, userID string, after int64, limit int) ([]Message, error) {
 	return collectMessages(s.DB.Query(ctx, `
 		SELECT `+msgCols+` FROM messages
-		WHERE (sender_id = $1 OR recipient_id = $1) AND id > $2
+		WHERE (recipient_id = $1 OR (sender_id = $1 AND group_id IS NULL)) AND id > $2
 		ORDER BY id LIMIT $3`, userID, after, limit))
 }
 
@@ -115,7 +132,7 @@ func (s *Store) History(ctx context.Context, userID, peerID string, before int64
 	msgs, err := collectMessages(s.DB.Query(ctx, `
 		SELECT `+msgCols+` FROM messages
 		WHERE ((sender_id = $1 AND recipient_id = $2) OR (sender_id = $2 AND recipient_id = $1))
-		  AND id < $3
+		  AND group_id IS NULL AND id < $3
 		ORDER BY id DESC LIMIT $4`, userID, peerID, before, limit))
 	for i, j := 0, len(msgs)-1; i < j; i, j = i+1, j-1 {
 		msgs[i], msgs[j] = msgs[j], msgs[i]
@@ -129,7 +146,7 @@ func (s *Store) Peers(ctx context.Context, userID string, limit int) ([]string, 
 	rows, err := s.DB.Query(ctx, `
 		SELECT peer::text FROM (
 			SELECT CASE WHEN sender_id = $1 THEN recipient_id ELSE sender_id END AS peer, max(id) AS last
-			FROM messages WHERE sender_id = $1 OR recipient_id = $1 GROUP BY 1
+			FROM messages WHERE (sender_id = $1 OR recipient_id = $1) AND group_id IS NULL GROUP BY 1
 		) p WHERE peer <> $1 ORDER BY last DESC LIMIT $2`, userID, limit)
 	if err != nil {
 		return nil, err
@@ -151,7 +168,7 @@ func (s *Store) Conversations(ctx context.Context, userID string) ([]Conversatio
 	rows, err := s.DB.Query(ctx, `
 		WITH mine AS (
 			SELECT m.*, CASE WHEN sender_id = $1 THEN recipient_id ELSE sender_id END AS peer
-			FROM messages m WHERE sender_id = $1 OR recipient_id = $1
+			FROM messages m WHERE (sender_id = $1 OR recipient_id = $1) AND group_id IS NULL
 		), last AS (
 			SELECT DISTINCT ON (peer) * FROM mine ORDER BY peer, id DESC
 		)

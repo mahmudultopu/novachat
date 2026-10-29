@@ -260,6 +260,31 @@ Starred messages.
   points at the same encrypted file and carries the same key.
 * Stars and "delete for me" stay on your phone.
 
+### Groups
+
+Tap **+** → **New group**, pick people (or add them by phone number) and
+name the group. In the group, tap its name for the group info: photo, name,
+description, members, admins, settings and the invite link.
+
+* **End to end encrypted.** The phone encrypts a separate copy of every group
+  message for each member over their 1:1 session and sends the copies as
+  ordinary messages (`MessageContent.group_id`). A file is uploaded once and
+  every copy carries its key. The server knows who is in a group but never
+  what is said in it.
+* **Admins** add and remove people, make others admin, reset or turn off the
+  invite link, and can limit sending messages or editing the group info to
+  admins. When the last admin leaves, the longest-standing member takes over.
+  Each phone also checks that a message comes from a current member (and from
+  an admin, when only admins may send).
+* **Invite links** look like `https://<server>/join/<code>`. In a browser the
+  link opens a small page with an "Open in NovaChat" button
+  (`novachat://join/<code>`); in the app, **+** → **Join a group** accepts a
+  pasted link. Resetting the link makes the old one stop working.
+* Every change ("Ana added Ben") is written by the server as a message to each
+  member, so phones that were offline see it in order with the chat.
+* Ticks on your group messages turn grey once every member's phone got the
+  message, and coloured once everyone has read it.
+
 ### API
 
 | Method and path | Auth | Purpose |
@@ -279,6 +304,15 @@ Starred messages.
 | `GET /v1/keys/{id}` | Bearer | Claim someone's prekey bundle to start encryption |
 | `POST /v1/attachments` (raw bytes) | Bearer | Upload an encrypted file, returns `{id}` |
 | `GET /v1/attachments/{id}` | Bearer | Download an encrypted file |
+| `POST /v1/groups` `{name, members}`, `GET /v1/groups` | Bearer | Create a group, list yours |
+| `GET`, `PATCH /v1/groups/{id}` `{name, description, only_admins_send, only_admins_edit}` | Bearer | Read or change a group |
+| `PUT`, `DELETE /v1/groups/{id}/avatar` | Bearer | Group photo |
+| `POST /v1/groups/{id}/members` `{user_ids}` | Admin | Add people |
+| `DELETE /v1/groups/{id}/members/{user}` | Admin, or yourself | Remove someone, or leave |
+| `PUT /v1/groups/{id}/members/{user}` `{role}` | Admin | Make or dismiss an admin |
+| `POST`, `DELETE /v1/groups/{id}/invite` | Admin | Reset or turn off the invite link |
+| `GET /v1/invites/{code}`, `POST /v1/invites/{code}/join` | Bearer | Preview and join from a link |
+| `GET /join/{code}` | – | Invite page that opens the app |
 | `GET /v1/ws` | Bearer | Realtime WebSocket |
 
 ### WebSocket frames (JSON)
@@ -340,6 +374,8 @@ Following the builder guide, in order:
 5. ~~**Message actions**~~ (done in 0.6.0): reply, react, edit, delete for
    everyone, forward, star and copy, see
    [Reply, react, edit, delete, forward, star](#reply-react-edit-delete-forward-star).
-6. **Push notifications** with Firebase Cloud Messaging for offline phones.
-7. **Groups**, then **voice and video calls** (WebRTC + LiveKit + coturn).
-8. A real **SMS provider** for production sign-up, and deployment.
+6. ~~**Groups**~~ (done in 0.7.0): admins, settings and invite links, see
+   [Groups](#groups).
+7. **Push notifications** with Firebase Cloud Messaging for offline phones.
+8. **Voice and video calls** (WebRTC + LiveKit + coturn).
+9. A real **SMS provider** for production sign-up, and deployment.

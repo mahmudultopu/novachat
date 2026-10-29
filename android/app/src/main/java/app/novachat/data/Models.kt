@@ -32,6 +32,8 @@ data class MessageDto(
     @SerialName("created_at") val createdAt: String,
     @SerialName("delivered_at") val deliveredAt: String? = null,
     @SerialName("read_at") val readAt: String? = null,
+    /** Set on group events the server writes ("Ana added Ben"); [body] is a [GroupEvent]. */
+    @SerialName("group_id") val groupId: String? = null,
 )
 
 @Serializable
@@ -94,6 +96,9 @@ data class ChatMessage(
     /** Deleted for everyone: only a placeholder is left. */
     val deleted: Boolean = false,
     val starred: Boolean = false,
+    val groupId: String? = null,
+    /** A group event such as "Ana added Ben"; [body] is a [GroupEvent] as JSON. */
+    val system: Boolean = false,
 ) {
     val ref: MessageRef get() = MessageRef(senderId, clientId)
 
@@ -107,10 +112,73 @@ data class ChatMessage(
         }
 }
 
+/** A chat in the list. For a group, [peer] carries the group's name and photo. */
 data class Conversation(
     val peer: User,
     val lastMessage: ChatMessage,
     val unread: Int,
+    val group: Group? = null,
+)
+
+@Serializable
+data class GroupMemberDto(val user: User, val role: String)
+
+@Serializable
+data class GroupDto(
+    val id: String,
+    val name: String,
+    val description: String = "",
+    @SerialName("avatar_id") val avatarId: String? = null,
+    @SerialName("created_by") val createdBy: String? = null,
+    @SerialName("only_admins_send") val onlyAdminsSend: Boolean = false,
+    @SerialName("only_admins_edit") val onlyAdminsEdit: Boolean = false,
+    @SerialName("invite_code") val inviteCode: String? = null,
+    val members: List<GroupMemberDto> = emptyList(),
+)
+
+@Serializable
+data class GroupMember(@SerialName("user_id") val userId: String, val role: String) {
+    val isAdmin: Boolean get() = role == "admin"
+}
+
+/** A group as stored on the phone. [left] once you leave or are removed. */
+data class Group(
+    val id: String,
+    val name: String,
+    val description: String = "",
+    val avatarId: String? = null,
+    val onlyAdminsSend: Boolean = false,
+    val onlyAdminsEdit: Boolean = false,
+    val inviteCode: String? = null,
+    val members: List<GroupMember> = emptyList(),
+    val left: Boolean = false,
+) {
+    fun member(userId: String?): GroupMember? = members.firstOrNull { it.userId == userId }
+    fun isAdmin(userId: String?): Boolean = member(userId)?.isAdmin == true
+    fun canSend(userId: String?): Boolean = !left && member(userId) != null && (!onlyAdminsSend || isAdmin(userId))
+    fun canEditInfo(userId: String?): Boolean = !left && member(userId) != null && (!onlyAdminsEdit || isAdmin(userId))
+
+    /** The group shown where a chat list expects a person. */
+    fun asUser() = User(id = id, phone = "", name = name, about = description, avatarId = avatarId)
+}
+
+/** The body of a group event message. */
+@Serializable
+data class GroupEvent(
+    val event: String,
+    val actor: String,
+    val targets: List<String> = emptyList(),
+    val name: String? = null,
+)
+
+@Serializable
+data class InvitePreview(
+    val id: String,
+    val name: String,
+    val description: String = "",
+    @SerialName("avatar_id") val avatarId: String? = null,
+    @SerialName("member_count") val memberCount: Int = 0,
+    @SerialName("is_member") val isMember: Boolean = false,
 )
 
 data class Session(
@@ -136,6 +204,9 @@ data class MessageContent(
     val reaction: Reaction? = null,
     val edit: Edit? = null,
     val delete: MessageRef? = null,
+    /** Group messages: which group, and the message's ID shared by every member's copy. */
+    @SerialName("group_id") val groupId: String? = null,
+    @SerialName("group_msg_id") val groupMessageId: String? = null,
 ) {
     val isControl: Boolean get() = reaction != null || edit != null || delete != null
 }
