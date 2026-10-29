@@ -1,6 +1,9 @@
 package app.novachat.ui.chats
 
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -16,7 +19,11 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -29,6 +36,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -64,6 +72,7 @@ import androidx.compose.ui.res.painterResource
 import app.novachat.ui.common.Avatar
 import app.novachat.ui.common.StatusTicks
 import app.novachat.ui.common.formatListTime
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -77,11 +86,24 @@ fun ChatsScreen(openChat: (String) -> Unit, openNewGroup: () -> Unit, openJoin: 
     val people by container.chats.people.collectAsStateWithLifecycle(initialValue = emptyMap())
     var newChat by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
+    var showArchived by remember { mutableStateOf(false) }
+    var actionsFor by remember { mutableStateOf<Conversation?>(null) }
+    val snackbar = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
+    val archived = conversations.filter { it.prefs.archived }
+    val shown = if (showArchived) archived else conversations.filterNot { it.prefs.archived }
+    LaunchedEffect(archived.isEmpty()) { if (archived.isEmpty()) showArchived = false }
+    BackHandler(enabled = showArchived) { showArchived = false }
 
     Scaffold(
         modifier = modifier,
         topBar = {
-            TopAppBar(title = {
+            if (showArchived) {
+                TopAppBar(
+                    title = { Text("Archived") },
+                    navigationIcon = { IconButton(onClick = { showArchived = false }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
+                )
+            } else TopAppBar(title = {
                 Column {
                     Text("NovaChat", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.primary)
                     if (connection != ConnectionState.Connected) {
@@ -98,6 +120,7 @@ fun ChatsScreen(openChat: (String) -> Unit, openNewGroup: () -> Unit, openJoin: 
                 shape = RoundedCornerShape(20.dp),
             ) { Icon(Icons.Filled.Add, "New chat") }
         },
+        snackbarHost = { SnackbarHost(snackbar) },
     ) { padding ->
         if (conversations.isEmpty()) {
             Column(
@@ -115,8 +138,23 @@ fun ChatsScreen(openChat: (String) -> Unit, openNewGroup: () -> Unit, openJoin: 
             }
         } else {
             LazyColumn(Modifier.fillMaxSize().padding(padding)) {
-                items(conversations, key = { it.peer.id }) { c ->
-                    ConversationRow(c, myId, people) { openChat(c.peer.id) }
+                if (showArchived) {
+                    item {
+                        Text(
+                            "Archived chats stay here when new messages arrive. Long-press a chat to unarchive it.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 32.dp, vertical = 12.dp),
+                        )
+                    }
+                } else if (archived.isNotEmpty()) {
+                    item(key = "archived") {
+                        ArchivedRow(unreadChats = archived.count { it.unread > 0 }) { showArchived = true }
+                    }
+                }
+                items(shown, key = { it.peer.id }) { c ->
+                    ConversationRow(c, myId, people, onLongClick = { actionsFor = c }) { openChat(c.peer.id) }
                 }
             }
         }
@@ -139,6 +177,12 @@ fun ChatsScreen(openChat: (String) -> Unit, openNewGroup: () -> Unit, openJoin: 
                 }
             }
         }
+    }
+
+    actionsFor?.let { c ->
+        ChatActionsSheet(c, scope, onDismiss = { actionsFor = null }, onMessage = { msg ->
+            scope.launch { snackbar.showSnackbar(msg) }
+        })
     }
 
     if (newChat) {
@@ -168,11 +212,35 @@ private fun MenuRow(icon: Painter, title: String, subtitle: String, onClick: () 
 }
 
 @Composable
-private fun ConversationRow(c: Conversation, myId: String?, people: Map<String, User>, onClick: () -> Unit) {
+private fun ArchivedRow(unreadChats: Int, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(52.dp), contentAlignment = Alignment.Center) {
+            Icon(painterResource(R.drawable.ic_archive), null, tint = MaterialTheme.colorScheme.primary)
+        }
+        Spacer(Modifier.width(14.dp))
+        Text("Archived", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+        if (unreadChats > 0) {
+            Text(unreadChats.toString(), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.secondary)
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun ConversationRow(
+    c: Conversation,
+    myId: String?,
+    people: Map<String, User>,
+    onLongClick: () -> Unit,
+    onClick: () -> Unit,
+) {
     Row(
         Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -216,8 +284,19 @@ private fun ConversationRow(c: Conversation, myId: String?, people: Map<String, 
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
+                val faint = MaterialTheme.colorScheme.onSurfaceVariant
+                if (c.prefs.muted) {
+                    Icon(painterResource(R.drawable.ic_muted), "Muted", Modifier.padding(start = 4.dp).size(16.dp), tint = faint)
+                }
+                if (c.prefs.pinned) {
+                    Icon(painterResource(R.drawable.ic_pin), "Pinned", Modifier.padding(start = 4.dp).size(16.dp), tint = faint)
+                }
                 if (c.unread > 0) {
-                    Badge(containerColor = MaterialTheme.colorScheme.secondary, contentColor = MaterialTheme.colorScheme.onSecondary) {
+                    Spacer(Modifier.width(4.dp))
+                    Badge(
+                        containerColor = if (c.prefs.muted) faint else MaterialTheme.colorScheme.secondary,
+                        contentColor = if (c.prefs.muted) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.onSecondary,
+                    ) {
                         Text(c.unread.toString(), fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 2.dp))
                     }
                 }
@@ -269,6 +348,112 @@ private fun NewChatDialog(onDismiss: () -> Unit, onFound: (String) -> Unit) {
                 },
             ) { Text("Start chat") }
         },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+/** Long-press menu for a chat: pin, mute and archive. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ChatActionsSheet(c: Conversation, scope: CoroutineScope, onDismiss: () -> Unit, onMessage: (String) -> Unit) {
+    // [scope] belongs to the chat list, so the change still saves after this sheet closes.
+    val repo = appContainer().chats
+    var choosingMute by remember { mutableStateOf(false) }
+    val id = c.peer.id
+
+    fun run(block: suspend () -> Unit) {
+        onDismiss()
+        scope.launch { block() }
+    }
+
+    if (choosingMute) {
+        MuteDialog(
+            onDismiss = { choosingMute = false; onDismiss() },
+            onPick = { until -> run { repo.setMuted(id, until) } },
+        )
+        return
+    }
+
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(Modifier.padding(bottom = 24.dp)) {
+            Text(
+                c.peer.displayName,
+                style = MaterialTheme.typography.titleMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
+            )
+            if (!c.prefs.archived) {
+                ActionRow(R.drawable.ic_pin, if (c.prefs.pinned) "Unpin chat" else "Pin chat") {
+                    run {
+                        if (!repo.setPinned(id, !c.prefs.pinned)) onMessage("You can pin up to 3 chats")
+                    }
+                }
+            }
+            if (c.prefs.muted) {
+                ActionRow(R.drawable.ic_muted, "Unmute notifications") { run { repo.setMuted(id, null) } }
+            } else {
+                ActionRow(R.drawable.ic_muted, "Mute notifications") { choosingMute = true }
+            }
+            if (c.prefs.archived) {
+                ActionRow(R.drawable.ic_unarchive, "Unarchive chat") { run { repo.setArchived(id, false) } }
+            } else {
+                ActionRow(R.drawable.ic_archive, "Archive chat") {
+                    run {
+                        repo.setArchived(id, true)
+                        onMessage("Chat archived")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ActionRow(icon: Int, label: String, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 24.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(painterResource(icon), null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.width(20.dp))
+        Text(label, style = MaterialTheme.typography.bodyLarge)
+    }
+}
+
+/** How long to silence a chat for. */
+@Composable
+internal fun MuteDialog(onDismiss: () -> Unit, onPick: (Long) -> Unit) {
+    val hour = 60 * 60 * 1000L
+    val options = listOf("8 hours" to 8 * hour, "1 week" to 7 * 24 * hour, "Always" to Long.MAX_VALUE)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Mute notifications for…") },
+        text = {
+            Column {
+                Text(
+                    "You won't be notified about new messages. You'll still see them in the chat.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(8.dp))
+                options.forEach { (label, length) ->
+                    Text(
+                        label,
+                        style = MaterialTheme.typography.bodyLarge,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable {
+                                val now = System.currentTimeMillis()
+                                onPick(if (length == Long.MAX_VALUE) length else now + length)
+                            }
+                            .padding(horizontal = 8.dp, vertical = 12.dp),
+                    )
+                }
+            }
+        },
+        confirmButton = {},
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }

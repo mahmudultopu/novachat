@@ -120,7 +120,17 @@ data class Conversation(
     val lastMessage: ChatMessage,
     val unread: Int,
     val group: Group? = null,
+    val prefs: ChatPrefs = ChatPrefs(),
 )
+
+/** Whether a chat is pinned to the top, archived or muted. */
+data class ChatPrefs(
+    val pinned: Boolean = false,
+    val archived: Boolean = false,
+    val mutedUntilMillis: Long? = null,
+) {
+    val muted: Boolean get() = mutedUntilMillis != null && mutedUntilMillis > System.currentTimeMillis()
+}
 
 @Serializable
 data class GroupMemberDto(val user: User, val role: String)
