@@ -79,6 +79,8 @@ data class MessageEntity(
     @ColumnInfo(defaultValue = "0") val system: Boolean = false,
     /** A finished call: [CallLog] as JSON. */
     val callLog: String? = null,
+    /** Disappearing messages: when this message is wiped from the phone. */
+    val expiresAtMillis: Long? = null,
 ) {
     fun toChatMessage() = ChatMessage(
         clientId = clientId,
@@ -204,6 +206,7 @@ data class ChatPrefsEntity(
     val pinnedAtMillis: Long? = null,
     val archived: Boolean = false,
     val mutedUntilMillis: Long? = null,
+    @ColumnInfo(defaultValue = "0") val disappearSec: Int = 0,
 )
 
 data class UnreadCount(val peerId: String, val unread: Int)
@@ -493,6 +496,23 @@ abstract class ChatDao {
     @Query("SELECT * FROM chat_prefs WHERE peerId = :peerId")
     abstract suspend fun chatPrefsNow(peerId: String): ChatPrefsEntity?
 
+    @Query("SELECT * FROM chat_prefs WHERE peerId = :peerId")
+    abstract fun chatPrefsFor(peerId: String): Flow<ChatPrefsEntity?>
+
+    @Query("SELECT * FROM messages WHERE expiresAtMillis IS NOT NULL AND expiresAtMillis <= :now")
+    abstract suspend fun expiredMessages(now: Long): List<MessageEntity>
+
+    /**
+     * Wipes a disappearing message but keeps a hidden row, so catching up
+     * with the server never fetches it again.
+     */
+    @Query(
+        """UPDATE messages SET body = '', attachment = NULL, localPath = NULL, replyTo = NULL, reactions = NULL,
+           callLog = NULL, starred = 0, control = '{}', expiresAtMillis = NULL
+           WHERE senderId = :senderId AND clientId = :clientId""",
+    )
+    abstract suspend fun wipeExpired(senderId: String, clientId: String)
+
     @Query("SELECT COUNT(*) FROM chat_prefs WHERE pinnedAtMillis IS NOT NULL")
     abstract suspend fun pinnedCount(): Int
 
@@ -533,7 +553,7 @@ abstract class ChatDao {
  */
 @Database(
     entities = [MessageEntity::class, UserEntity::class, MetaEntity::class, SessionEntity::class, PreKeyEntity::class, GroupEntity::class, StatusEntity::class, ChatPrefsEntity::class],
-    version = 9,
+    version = 10,
     exportSchema = false,
 )
 abstract class ChatDatabase : RoomDatabase() {
@@ -624,9 +644,17 @@ abstract class ChatDatabase : RoomDatabase() {
             }
         }
 
+        /** 9 -> 10: disappearing messages. */
+        private val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `messages` ADD COLUMN `expiresAtMillis` INTEGER")
+                db.execSQL("ALTER TABLE `chat_prefs` ADD COLUMN `disappearSec` INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         fun open(context: Context): ChatDatabase =
             Room.databaseBuilder(context, ChatDatabase::class.java, "novachat.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10)
                 .build()
     }
 }

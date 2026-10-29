@@ -149,8 +149,58 @@ class ChatRepository(
         dao.upsertChatPrefs(p.copy(mutedUntilMillis = untilMillis))
     }
 
-    private fun ChatPrefsEntity.toPrefs() =
-        ChatPrefs(pinned = pinnedAtMillis != null, archived = archived, mutedUntilMillis = mutedUntilMillis)
+    /** One chat's pin, archive, mute and disappearing-messages settings. */
+    fun chatPrefs(peerId: String): Flow<ChatPrefs> = dao.chatPrefsFor(peerId).map { it?.toPrefs() ?: ChatPrefs() }
+
+    /**
+     * Turns disappearing messages on (for [seconds]) or off (0) in a chat,
+     * for everyone in it: a line saying so goes out like a message.
+     */
+    fun setDisappearing(peerId: String, seconds: Int) {
+        val s = session ?: return
+        val me = s.user.id
+        scope.launch {
+            setTimer(peerId, seconds)
+            queue(
+                MessageEntity(
+                    senderId = me,
+                    clientId = UUID.randomUUID().toString(),
+                    id = null,
+                    recipientId = peerId,
+                    peerId = peerId,
+                    body = NovaJson.encodeToString(GroupEvent(event = "timer", actor = me, seconds = seconds)),
+                    createdAtMillis = System.currentTimeMillis(),
+                    deliveredAt = null,
+                    readAt = null,
+                    failed = false,
+                    system = true,
+                ),
+            )
+        }
+    }
+
+    private suspend fun setTimer(peerId: String, seconds: Int) = db.withTransaction {
+        val p = dao.chatPrefsNow(peerId) ?: ChatPrefsEntity(peerId)
+        dao.upsertChatPrefs(p.copy(disappearSec = seconds.coerceIn(0, MAX_DISAPPEAR_SEC)))
+    }
+
+    /** Wipes disappearing messages whose time is up, with their files. */
+    private suspend fun sweepExpired() {
+        writeLock.withLock {
+            for (m in dao.expiredMessages(System.currentTimeMillis())) {
+                m.localPath?.let { deleteFile(it) }
+                // Never sent: nothing on the server to keep in step with.
+                if (m.id == null) dao.deleteMessage(m.senderId, m.clientId) else dao.wipeExpired(m.senderId, m.clientId)
+            }
+        }
+    }
+
+    private fun ChatPrefsEntity.toPrefs() = ChatPrefs(
+        pinned = pinnedAtMillis != null,
+        archived = archived,
+        mutedUntilMillis = mutedUntilMillis,
+        disappearSec = disappearSec,
+    )
 
     /** Everyone this phone knows, by user ID. */
     val people: Flow<Map<String, User>> = dao.users().map { list -> list.associate { it.id to it.toUser() } }
@@ -385,6 +435,12 @@ class ChatRepository(
             scope.launch {
                 socket.state.collect { if (it == ConnectionState.Unauthorized) _unauthorized.tryEmit(Unit) }
             },
+            scope.launch {
+                while (true) {
+                    sweepExpired()
+                    delay(SWEEP_MS)
+                }
+            },
         )
     }
 
@@ -465,7 +521,10 @@ class ChatRepository(
      * Saves a new outgoing message and sends it. In a group it is saved once
      * for the chat and then copied, encrypted, for each member.
      */
-    private suspend fun queue(msg: MessageEntity) {
+    private suspend fun queue(new: MessageEntity) {
+        // With disappearing messages on, the message vanishes after the chat's time.
+        val timer = if (new.system || new.callLog != null) 0 else dao.chatPrefsNow(new.peerId)?.disappearSec ?: 0
+        val msg = if (timer > 0) new.copy(expiresAtMillis = new.createdAtMillis + timer * 1000L) else new
         if (dao.groupNow(msg.peerId) != null) {
             val root = msg.copy(groupId = msg.peerId)
             dao.upsertMessages(listOf(root))
@@ -902,11 +961,13 @@ class ChatRepository(
                     val content = (
                         msg.control ?: NovaJson.encodeToString(
                             MessageContent(
-                                text = msg.body.ifEmpty { null },
+                                text = if (msg.system) null else msg.body.ifEmpty { null },
                                 attachment = attachment,
                                 replyTo = msg.replyTo?.let { NovaJson.decodeFromString<MessageRef>(it) },
                                 forwarded = msg.forwarded,
                                 callLog = msg.callLog?.let { NovaJson.decodeFromString<CallLog>(it) },
+                                expireSec = msg.expireSec(),
+                                timerSec = msg.timerSec(),
                             ),
                         )
                     ).toByteArray()
@@ -948,12 +1009,14 @@ class ChatRepository(
             if (dao.copyCount(s.user.id, root.clientId) > 0) return
             val attachment = if (root.attachment != null) uploadIfNeeded(s, root) ?: return else null
             val content = MessageContent(
-                text = root.body.ifEmpty { null },
+                text = if (root.system) null else root.body.ifEmpty { null },
                 attachment = attachment,
                 replyTo = root.replyTo?.let { NovaJson.decodeFromString<MessageRef>(it) },
                 forwarded = root.forwarded,
                 groupId = groupId,
                 groupMessageId = root.clientId,
+                expireSec = root.expireSec(),
+                timerSec = root.timerSec(),
             )
             fanOut(groupId, content, parent = root.clientId)
         } finally {
@@ -1289,6 +1352,15 @@ class ChatRepository(
                                 dao.insertMessage(inGroup.copy(body = "", control = NovaJson.encodeToString(content)))
                                 applyControl(dto.senderId, gid, content, base.createdAtMillis)
                             }
+                            content.timerSec != null -> {
+                                val row = inGroup.copy(clientId = content.groupMessageId ?: dto.clientId)
+                                // Only people who may edit the group info may change its timer.
+                                if (group == null || group.canEditInfo(dto.senderId)) {
+                                    applyTimer(row, content.timerSec)
+                                } else {
+                                    dao.insertMessage(row.copy(body = "", control = "{}"))
+                                }
+                            }
                             else -> dao.insertMessage(
                                 inGroup.copy(
                                     clientId = content.groupMessageId ?: dto.clientId,
@@ -1296,6 +1368,7 @@ class ChatRepository(
                                     attachment = content.attachment?.let { NovaJson.encodeToString(it) },
                                     replyTo = content.replyTo?.let { NovaJson.encodeToString(it) },
                                     forwarded = content.forwarded,
+                                    expiresAtMillis = expiry(base, content),
                                 ),
                             )
                         }
@@ -1304,6 +1377,7 @@ class ChatRepository(
                         dao.insertMessage(base.copy(body = "", control = NovaJson.encodeToString(content)))
                         applyControl(dto.senderId, peer, content, base.createdAtMillis)
                     }
+                    content.timerSec != null -> applyTimer(base, content.timerSec)
                     else -> dao.insertMessage(
                         base.copy(
                             body = content.text.orEmpty().take(MAX_TEXT),
@@ -1313,12 +1387,34 @@ class ChatRepository(
                             callLog = content.callLog?.let { NovaJson.encodeToString(it) },
                             // An answered call is nothing new to read: don't count it as unread.
                             readAt = if (content.callLog?.missed == false) base.readAt ?: dto.createdAt else base.readAt,
+                            expiresAtMillis = expiry(base, content),
                         ),
                     )
                 }
             }
         }
         return refresh
+    }
+
+    /** Saves "Ana turned on disappearing messages" and switches the chat's timer. */
+    private suspend fun applyTimer(row: MessageEntity, seconds: Int) {
+        val sec = seconds.coerceIn(0, MAX_DISAPPEAR_SEC)
+        dao.insertMessage(
+            row.copy(body = NovaJson.encodeToString(GroupEvent(event = "timer", actor = row.senderId, seconds = sec)), system = true),
+        )
+        setTimer(row.peerId, sec)
+    }
+
+    /** When an incoming disappearing message vanishes, counted from when it was sent. */
+    private fun expiry(base: MessageEntity, content: MessageContent): Long? =
+        content.expireSec?.takeIf { it > 0 }?.let { base.createdAtMillis + it.coerceAtMost(MAX_DISAPPEAR_SEC) * 1000L }
+
+    private fun MessageEntity.expireSec(): Int? = expiresAtMillis?.let { ((it - createdAtMillis) / 1000).toInt() }
+
+    private fun MessageEntity.timerSec(): Int? = if (!system) {
+        null
+    } else {
+        runCatching { NovaJson.decodeFromString<GroupEvent>(body) }.getOrNull()?.takeIf { it.event == "timer" }?.seconds
     }
 
     private suspend fun applyReceipt(frame: ServerFrame) {
@@ -1369,6 +1465,8 @@ class ChatRepository(
     private companion object {
         const val SYNC_PAGE = 500
         const val MAX_PINNED = 3
+        const val SWEEP_MS = 15_000L
+        const val MAX_DISAPPEAR_SEC = 90 * 24 * 60 * 60
         const val TYPING_MS = 4_000L
         const val RETRY_MS = 30_000L
         val FALLBACK_ICE = listOf(IceServerDto(urls = listOf("stun:stun.l.google.com:19302")))
