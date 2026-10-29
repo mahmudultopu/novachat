@@ -32,6 +32,11 @@ fun groupEventText(e: GroupEvent, me: String?, people: Map<String, User>): Strin
         "description" -> "$actor changed the group description"
         "photo" -> "$actor changed the group photo"
         "settings" -> "$actor changed the group settings"
+        "timer" -> if ((e.seconds ?: 0) == 0) {
+            "$actor turned off disappearing messages"
+        } else {
+            "$actor turned on disappearing messages. New messages will disappear after ${disappearLabel(e.seconds ?: 0)}."
+        }
         else -> "$actor updated the group"
     }
 }

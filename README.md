@@ -359,6 +359,20 @@ Long-press a chat in the list:
 These choices live only on this phone (the `chat_prefs` table), so the server
 never learns who you pinned or muted.
 
+### Disappearing messages
+
+Open a contact's or group's info and tap **Disappearing messages** to pick
+24 hours, 7 days or 90 days (or Off). A line in the chat tells everyone who
+changed it. In a group, only people who may edit the group info can change it.
+
+* The timer travels inside the encrypted message (`timer_s`), and each new
+  message carries its own time (`expire_s`), so the server can't tell which
+  chats use it.
+* Each phone wipes a message, and its file, when its time is up, counted from
+  when it was sent. A hidden placeholder row stays so catching up with the
+  server never fetches it again.
+* Messages sent before the timer was turned on stay.
+
 ### API
 
 | Method and path | Auth | Purpose |
@@ -458,6 +472,7 @@ Following the builder guide, in order:
 9. ~~**Voice and video calls**~~ (done in 0.10.0): one-to-one, see
    [Voice and video calls](#voice-and-video-calls). Group calls come next.
 10. **Chat controls**: ~~pin, mute and archive~~ (done in 0.11.0, see
-    [Pin, mute and archive](#pin-mute-and-archive)); disappearing messages,
+    [Pin, mute and archive](#pin-mute-and-archive)), ~~disappearing
+    messages~~ (done in 0.12.0, see [Disappearing messages](#disappearing-messages));
     block, report and privacy settings next.
 11. A real **SMS provider** for production sign-up, and deployment.

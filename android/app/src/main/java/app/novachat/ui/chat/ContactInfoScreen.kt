@@ -85,6 +85,8 @@ fun ContactInfoScreen(peerId: String, onBack: () -> Unit) {
                 Text(peer?.about?.ifBlank { null } ?: "Hey there, I'm on NovaChat.")
             }
             Spacer(Modifier.height(12.dp))
+            DisappearingCard(peerId, enabled = true)
+            Spacer(Modifier.height(12.dp))
             InfoCard(onClick = { showSafety = true }) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Filled.Lock, null, Modifier.size(22.dp), tint = MaterialTheme.colorScheme.primary)

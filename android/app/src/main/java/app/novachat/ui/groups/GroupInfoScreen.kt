@@ -69,6 +69,7 @@ import app.novachat.data.GroupMember
 import app.novachat.data.MediaException
 import app.novachat.data.User
 import app.novachat.ui.appContainer
+import app.novachat.ui.chat.DisappearingCard
 import app.novachat.ui.common.Avatar
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.buildJsonObject
@@ -247,6 +248,9 @@ fun GroupInfoScreen(groupId: String, onBack: () -> Unit, openChat: (String) -> U
                     color = if (g.description.isBlank()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
                 )
             }
+
+            Spacer(Modifier.height(12.dp))
+            DisappearingCard(groupId, enabled = canEdit)
 
             if (admin) {
                 Spacer(Modifier.height(12.dp))

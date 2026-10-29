@@ -128,6 +128,8 @@ data class ChatPrefs(
     val pinned: Boolean = false,
     val archived: Boolean = false,
     val mutedUntilMillis: Long? = null,
+    /** Disappearing messages: new messages vanish this many seconds after they're sent; 0 is off. */
+    val disappearSec: Int = 0,
 ) {
     val muted: Boolean get() = mutedUntilMillis != null && mutedUntilMillis > System.currentTimeMillis()
 }
@@ -193,6 +195,8 @@ data class GroupEvent(
     val actor: String,
     val targets: List<String> = emptyList(),
     val name: String? = null,
+    /** "timer" events: the new disappearing-messages time, 0 for off. */
+    val seconds: Int? = null,
 )
 
 @Serializable
@@ -238,6 +242,10 @@ data class MessageContent(
     /** Calls: setting one up (hidden), and the "Missed voice call" line afterwards. */
     val call: CallSignal? = null,
     @SerialName("call_log") val callLog: CallLog? = null,
+    /** Disappearing messages: this message vanishes this many seconds after it was sent. */
+    @SerialName("expire_s") val expireSec: Int? = null,
+    /** "I set disappearing messages to this many seconds" (0 is off), shown as a line in the chat. */
+    @SerialName("timer_s") val timerSec: Int? = null,
 ) {
     val isControl: Boolean
         get() = reaction != null || edit != null || delete != null ||
