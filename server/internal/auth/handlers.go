@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -25,6 +26,9 @@ func (h *Handlers) Register(mux *http.ServeMux) {
 	mux.Handle("PATCH /v1/me", h.Require(http.HandlerFunc(h.updateMe)))
 	mux.Handle("GET /v1/users/by-phone", h.Require(http.HandlerFunc(h.userByPhone)))
 	mux.Handle("GET /v1/users/{id}", h.Require(http.HandlerFunc(h.userByID)))
+	mux.Handle("PUT /v1/me/avatar", h.Require(http.HandlerFunc(h.setAvatar)))
+	mux.Handle("DELETE /v1/me/avatar", h.Require(http.HandlerFunc(h.removeAvatar)))
+	mux.Handle("GET /v1/avatars/{id}", h.Require(http.HandlerFunc(h.avatar)))
 }
 
 func (h *Handlers) requestCode(w http.ResponseWriter, r *http.Request) {
@@ -170,6 +174,62 @@ func (h *Handlers) writeUser(w http.ResponseWriter, r *http.Request, id string) 
 		return
 	}
 	httpx.JSON(w, http.StatusOK, u)
+}
+
+const maxAvatarBytes = 512 << 10
+
+// setAvatar takes a JPEG profile photo as the raw request body. The app
+// crops and shrinks it first, so 512 KB is plenty.
+func (h *Handlers) setAvatar(w http.ResponseWriter, r *http.Request) {
+	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxAvatarBytes))
+	var tooBig *http.MaxBytesError
+	switch {
+	case errors.As(err, &tooBig):
+		httpx.Error(w, http.StatusRequestEntityTooLarge, "too_large", "profile photos can be at most 512 KB")
+		return
+	case err != nil:
+		httpx.Error(w, http.StatusBadRequest, "bad_body", "could not read upload")
+		return
+	case len(data) < 3 || data[0] != 0xFF || data[1] != 0xD8 || data[2] != 0xFF:
+		httpx.Error(w, http.StatusBadRequest, "not_jpeg", "profile photos must be JPEG")
+		return
+	}
+	u, err := h.Store.SetAvatar(r.Context(), UserID(r.Context()), data)
+	if err != nil {
+		internalError(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, u)
+}
+
+func (h *Handlers) removeAvatar(w http.ResponseWriter, r *http.Request) {
+	u, err := h.Store.RemoveAvatar(r.Context(), UserID(r.Context()))
+	if err != nil {
+		internalError(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, u)
+}
+
+func (h *Handlers) avatar(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !IsUUID(id) {
+		httpx.Error(w, http.StatusNotFound, "not_found", "no such photo")
+		return
+	}
+	data, err := h.Store.Avatar(r.Context(), id)
+	if errors.Is(err, ErrNotFound) {
+		httpx.Error(w, http.StatusNotFound, "not_found", "no such photo")
+		return
+	}
+	if err != nil {
+		internalError(w, err)
+		return
+	}
+	// A new photo gets a new id, so each one can be cached forever.
+	w.Header().Set("Content-Type", "image/jpeg")
+	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+	w.Write(data)
 }
 
 type ctxKey struct{}

@@ -124,7 +124,7 @@ private fun ConversationRow(c: Conversation, myId: String?, onClick: () -> Unit)
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Avatar(c.peer.displayName, c.peer.id, 52.dp)
+        Avatar(c.peer.displayName, c.peer.id, 52.dp, c.peer.avatarId)
         Spacer(Modifier.width(14.dp))
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {

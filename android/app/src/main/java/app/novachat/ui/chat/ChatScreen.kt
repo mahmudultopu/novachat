@@ -88,17 +88,19 @@ import app.novachat.data.DeliveryStatus
 import app.novachat.ui.appContainer
 import app.novachat.ui.common.Avatar
 import app.novachat.ui.common.StatusTicks
+import app.novachat.ui.common.formatLastSeen
 import app.novachat.ui.common.formatTime
 import app.novachat.ui.theme.LocalBubbleColors
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChatScreen(peerId: String, onBack: () -> Unit) {
+fun ChatScreen(peerId: String, onBack: () -> Unit, openInfo: () -> Unit) {
     val container = appContainer()
     val repo = container.chats
     val messages by remember(peerId) { repo.messagesWith(peerId) }.collectAsStateWithLifecycle(initialValue = emptyList())
     val peer by remember(peerId) { repo.user(peerId) }.collectAsStateWithLifecycle(initialValue = null)
     val typing by remember(peerId) { repo.isTyping(peerId) }.collectAsStateWithLifecycle(initialValue = false)
+    val presence by remember(peerId) { repo.presence(peerId) }.collectAsStateWithLifecycle(initialValue = null)
     val session by container.session.collectAsStateWithLifecycle()
     val myId = (session as? SessionState.SignedIn)?.session?.user?.id
 
@@ -206,13 +208,20 @@ fun ChatScreen(peerId: String, onBack: () -> Unit) {
                     IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
                 },
                 title = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        Modifier.clickable(onClick = openInfo).padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
                         val name = peer?.displayName ?: "…"
-                        Avatar(name, peerId, 38.dp)
+                        Avatar(name, peerId, 38.dp, peer?.avatarId)
                         Spacer(Modifier.width(12.dp))
                         Column {
                             Text(name, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            val subtitle = if (typing) "typing…" else peer?.phone.orEmpty()
+                            val subtitle = when {
+                                typing -> "typing…"
+                                else -> formatLastSeen(presence?.online == true, presence?.lastSeenAt ?: peer?.lastSeenAt)
+                                    ?: peer?.phone.orEmpty()
+                            }
                             if (subtitle.isNotEmpty()) {
                                 Text(
                                     subtitle,
@@ -456,7 +465,7 @@ private fun EncryptionNotice(onClick: () -> Unit) {
 
 /** Shows the safety number in 12 groups of 5 digits, like a short code to read aloud. */
 @Composable
-private fun SafetyNumberDialog(peerName: String, load: suspend () -> String?, onDismiss: () -> Unit) {
+internal fun SafetyNumberDialog(peerName: String, load: suspend () -> String?, onDismiss: () -> Unit) {
     var number by remember { mutableStateOf<String?>(null) }
     var loaded by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {

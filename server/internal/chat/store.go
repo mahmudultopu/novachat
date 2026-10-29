@@ -123,6 +123,29 @@ func (s *Store) History(ctx context.Context, userID, peerID string, before int64
 	return msgs, err
 }
 
+// Peers returns everyone userID has exchanged messages with, most recent
+// first. Presence changes are sent to them.
+func (s *Store) Peers(ctx context.Context, userID string, limit int) ([]string, error) {
+	rows, err := s.DB.Query(ctx, `
+		SELECT peer::text FROM (
+			SELECT CASE WHEN sender_id = $1 THEN recipient_id ELSE sender_id END AS peer, max(id) AS last
+			FROM messages WHERE sender_id = $1 OR recipient_id = $1 GROUP BY 1
+		) p WHERE peer <> $1 ORDER BY last DESC LIMIT $2`, userID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 // Conversations lists userID's chats, most recent first.
 func (s *Store) Conversations(ctx context.Context, userID string) ([]Conversation, error) {
 	rows, err := s.DB.Query(ctx, `
@@ -134,7 +157,7 @@ func (s *Store) Conversations(ctx context.Context, userID string) ([]Conversatio
 		)
 		SELECT last.id, last.client_id::text, last.sender_id::text, last.recipient_id::text, last.body, last.envelope,
 		       last.created_at, last.delivered_at, last.read_at,
-		       u.id::text, u.phone, u.name, u.about, u.created_at,
+		       u.id::text, u.phone, u.name, u.about, u.created_at, u.avatar_id::text, u.last_seen_at,
 		       (SELECT count(*) FROM messages x
 		         WHERE x.sender_id = last.peer AND x.recipient_id = $1 AND x.read_at IS NULL)
 		FROM last JOIN users u ON u.id = last.peer
@@ -148,7 +171,7 @@ func (s *Store) Conversations(ctx context.Context, userID string) ([]Conversatio
 		var c Conversation
 		m := &c.LastMessage
 		if err := rows.Scan(&m.ID, &m.ClientID, &m.SenderID, &m.RecipientID, &m.Body, &m.Envelope, &m.CreatedAt, &m.DeliveredAt, &m.ReadAt,
-			&c.Peer.ID, &c.Peer.Phone, &c.Peer.Name, &c.Peer.About, &c.Peer.CreatedAt, &c.Unread); err != nil {
+			&c.Peer.ID, &c.Peer.Phone, &c.Peer.Name, &c.Peer.About, &c.Peer.CreatedAt, &c.Peer.AvatarID, &c.Peer.LastSeenAt, &c.Unread); err != nil {
 			return nil, err
 		}
 		out = append(out, c)

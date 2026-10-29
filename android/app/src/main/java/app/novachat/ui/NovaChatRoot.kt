@@ -20,7 +20,9 @@ import app.novachat.SessionState
 import app.novachat.ui.auth.AuthFlow
 import app.novachat.ui.auth.ProfileSetupScreen
 import app.novachat.ui.chat.ChatScreen
+import app.novachat.ui.chat.ContactInfoScreen
 import app.novachat.ui.home.HomeScreen
+import app.novachat.ui.settings.ProfileScreen
 
 @Composable
 fun appContainer(): AppContainer = (LocalContext.current.applicationContext as NovaChatApp).container
@@ -44,13 +46,24 @@ private fun MainNav() {
     val nav = rememberNavController()
     NavHost(nav, startDestination = "home") {
         composable("home") {
-            HomeScreen(openChat = { peerId -> nav.navigate("chat/$peerId") })
+            HomeScreen(
+                openChat = { peerId -> nav.navigate("chat/$peerId") },
+                openProfile = { nav.navigate("profile") },
+            )
         }
         composable("chat/{peerId}", arguments = listOf(navArgument("peerId") { type = NavType.StringType })) { entry ->
+            val peerId = entry.arguments?.getString("peerId").orEmpty()
             ChatScreen(
-                peerId = entry.arguments?.getString("peerId").orEmpty(),
+                peerId = peerId,
                 onBack = { nav.popBackStack() },
+                openInfo = { nav.navigate("contact/$peerId") },
             )
+        }
+        composable("contact/{peerId}", arguments = listOf(navArgument("peerId") { type = NavType.StringType })) { entry ->
+            ContactInfoScreen(peerId = entry.arguments?.getString("peerId").orEmpty(), onBack = { nav.popBackStack() })
+        }
+        composable("profile") {
+            ProfileScreen(onBack = { nav.popBackStack() })
         }
     }
 }

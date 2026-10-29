@@ -38,6 +38,32 @@ class ApiClient(private val http: OkHttpClient) {
     suspend fun updateName(session: Session, name: String): User =
         call(session.serverUrl, "PATCH", "/v1/me", session.token, buildJsonObject { put("name", name) })
 
+    suspend fun updateProfile(session: Session, name: String, about: String): User =
+        call(session.serverUrl, "PATCH", "/v1/me", session.token, buildJsonObject {
+            put("name", name)
+            put("about", about)
+        })
+
+    suspend fun setAvatar(session: Session, jpeg: ByteArray): User = withContext(Dispatchers.IO) {
+        val request = Request.Builder()
+            .url(session.serverUrl.trimEnd('/') + "/v1/me/avatar")
+            .header("Authorization", "Bearer ${session.token}")
+            .put(jpeg.toRequestBody("image/jpeg".toMediaType()))
+            .build()
+        execute(request) { NovaJson.decodeFromString<User>(it.body!!.string()) }
+    }
+
+    suspend fun removeAvatar(session: Session): User =
+        call(session.serverUrl, "DELETE", "/v1/me/avatar", session.token, null)
+
+    suspend fun avatar(session: Session, id: String): ByteArray = withContext(Dispatchers.IO) {
+        val request = Request.Builder()
+            .url(session.serverUrl.trimEnd('/') + "/v1/avatars/$id")
+            .header("Authorization", "Bearer ${session.token}")
+            .build()
+        execute(request) { it.body!!.bytes() }
+    }
+
     suspend fun logout(session: Session) {
         call<Unit>(session.serverUrl, "POST", "/v1/auth/logout", session.token, null)
     }

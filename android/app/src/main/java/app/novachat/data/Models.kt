@@ -9,9 +9,15 @@ data class User(
     val phone: String,
     val name: String = "",
     val about: String = "",
+    /** Profile photo at /v1/avatars/{id}, or null for initials. */
+    @SerialName("avatar_id") val avatarId: String? = null,
+    @SerialName("last_seen_at") val lastSeenAt: String? = null,
 ) {
     val displayName: String get() = name.ifBlank { phone }
 }
+
+/** Whether someone is connected right now, or when they last were. */
+data class Presence(val online: Boolean, val lastSeenAt: String?)
 
 /** A message as the server stores it. */
 @Serializable
@@ -58,6 +64,8 @@ data class ServerFrame(
     @SerialName("client_id") val clientId: String? = null,
     val code: String? = null,
     val error: String? = null,
+    val online: Boolean? = null,
+    @SerialName("last_seen_at") val lastSeenAt: String? = null,
 )
 
 enum class DeliveryStatus { Pending, Sent, Delivered, Read, Failed }

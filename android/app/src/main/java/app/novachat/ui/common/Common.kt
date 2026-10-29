@@ -1,6 +1,15 @@
 package app.novachat.ui.common
 
+import android.graphics.Bitmap
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
+import app.novachat.ui.appContainer
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -26,6 +35,7 @@ import app.novachat.R
 import app.novachat.data.DeliveryStatus
 import java.time.Instant
 import java.time.LocalDate
+import java.time.OffsetDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
@@ -36,11 +46,19 @@ private val avatarPalette = listOf(
     Color(0xFF3C8DEB), Color(0xFF9A4DD8), Color(0xFF2FA35A), Color(0xFFD1494A),
 )
 
-/** A round avatar with the person's initials, coloured by their ID. */
+/**
+ * A round avatar: the person's profile photo when they have one, otherwise
+ * their initials on a colour picked from their ID.
+ */
 @Composable
-fun Avatar(name: String, id: String, size: Dp = 48.dp) {
+fun Avatar(name: String, id: String, size: Dp = 48.dp, photoId: String? = null) {
     val initials = name.split(' ', '+').filter { it.isNotBlank() }.take(2)
         .joinToString("") { it.first().uppercase() }.ifEmpty { "#" }
+    val repo = appContainer().chats
+    val px = with(LocalDensity.current) { size.roundToPx() }
+    val photo by produceState<Bitmap?>(null, photoId, px) {
+        value = photoId?.let { repo.avatar(it, px) }
+    }
     Box(
         modifier = Modifier
             .size(size)
@@ -48,7 +66,12 @@ fun Avatar(name: String, id: String, size: Dp = 48.dp) {
             .background(avatarPalette[id.hashCode().absoluteValue % avatarPalette.size]),
         contentAlignment = Alignment.Center,
     ) {
-        Text(initials, color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = (size.value * 0.36f).sp)
+        val bitmap = photo
+        if (bitmap != null) {
+            Image(bitmap.asImageBitmap(), name, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+        } else {
+            Text(initials, color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = (size.value * 0.36f).sp)
+        }
     }
 }
 
@@ -79,6 +102,20 @@ private val dateFormat = DateTimeFormatter.ofLocalizedDate(FormatStyle.SHORT)
 
 fun formatTime(millis: Long): String =
     timeFormat.format(Instant.ofEpochMilli(millis).atZone(ZoneId.systemDefault()))
+
+/** "online", "last seen today at 14:05", "last seen yesterday at …" or a date. */
+fun formatLastSeen(online: Boolean, lastSeenAt: String?): String? {
+    if (online) return "online"
+    val at = lastSeenAt?.let { runCatching { OffsetDateTime.parse(it).toInstant() }.getOrNull() } ?: return null
+    val zoned = at.atZone(ZoneId.systemDefault())
+    val today = LocalDate.now()
+    val time = timeFormat.format(zoned)
+    return when (zoned.toLocalDate()) {
+        today -> "last seen today at $time"
+        today.minusDays(1) -> "last seen yesterday at $time"
+        else -> "last seen ${dateFormat.format(zoned)}"
+    }
+}
 
 /** "14:05" for today, "Yesterday", or a short date. */
 fun formatListTime(millis: Long): String {

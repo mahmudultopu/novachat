@@ -30,7 +30,7 @@ const (
 
 // Frames sent by the app.
 type inbound struct {
-	Type     string `json:"type"` // "send", "receipt" or "typing"
+	Type     string `json:"type"` // "send", "receipt", "typing" or "presence_query"
 	ClientID string `json:"client_id,omitempty"`
 	To       string `json:"to,omitempty"`
 	Body     string `json:"body,omitempty"`
@@ -44,7 +44,7 @@ type inbound struct {
 
 // Frames sent by the server.
 type outbound struct {
-	Type       string   `json:"type"` // "ready", "message", "receipt", "typing" or "error"
+	Type       string   `json:"type"` // "ready", "message", "receipt", "typing", "presence" or "error"
 	UserID     string   `json:"user_id,omitempty"`
 	Message    *Message `json:"message,omitempty"`
 	Status     string   `json:"status,omitempty"`
@@ -54,6 +54,9 @@ type outbound struct {
 	ClientID   string   `json:"client_id,omitempty"`
 	Code       string   `json:"code,omitempty"`
 	Error      string   `json:"error,omitempty"`
+	// Presence frames: is the user online, and when were they last seen.
+	Online     *bool      `json:"online,omitempty"`
+	LastSeenAt *time.Time `json:"last_seen_at,omitempty"`
 }
 
 var upgrader = websocket.Upgrader{
@@ -93,13 +96,23 @@ func (h *Handlers) serveWS(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	c := &client{userID: auth.UserID(r.Context()), conn: conn, send: make(chan []byte, sendBufferSize), cancel: cancel}
-	if err := h.Hub.add(ctx, c); err != nil {
+	first, err := h.Hub.add(ctx, c)
+	if err != nil {
 		slog.Error("hub add failed", "err", err)
 		cancel()
 		conn.Close()
 		return
 	}
-	defer h.Hub.remove(c)
+	defer func() {
+		if h.Hub.remove(c) {
+			h.wentOffline(c.userID)
+		}
+	}()
+	if first {
+		h.Hub.MarkOnline(ctx, c.userID)
+		go h.announcePresence(c.userID, true, nil)
+	}
+	go h.keepOnline(ctx, c.userID)
 
 	go c.writeLoop(ctx)
 	c.sendJSON(outbound{Type: "ready", UserID: c.userID})
@@ -156,6 +169,8 @@ func (h *Handlers) readLoop(ctx context.Context, c *client) {
 			h.handleSend(ctx, c, in)
 		case "receipt":
 			h.handleReceipt(ctx, c, in)
+		case "presence_query":
+			h.handlePresenceQuery(ctx, c, in.To)
 		case "typing":
 			if auth.IsUUID(in.To) && in.To != c.userID {
 				b, _ := json.Marshal(outbound{Type: "typing", From: c.userID})
@@ -216,6 +231,60 @@ func (h *Handlers) handleSend(ctx context.Context, c *client, in inbound) {
 	if inserted && m.RecipientID != c.userID {
 		h.Hub.Publish(ctx, m.RecipientID, b)
 	}
+}
+
+func (h *Handlers) keepOnline(ctx context.Context, userID string) {
+	t := time.NewTicker(presenceRefresh)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			h.Hub.MarkOnline(ctx, userID)
+		}
+	}
+}
+
+func (h *Handlers) wentOffline(userID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	h.Hub.MarkOffline(ctx, userID)
+	if err := h.Auth.Store.TouchLastSeen(ctx, userID); err != nil {
+		slog.Error("last seen update failed", "err", err)
+	}
+	now := time.Now().UTC()
+	h.announcePresence(userID, false, &now)
+}
+
+// announcePresence tells everyone userID chats with that they came online
+// or went offline.
+func (h *Handlers) announcePresence(userID string, online bool, lastSeen *time.Time) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	peers, err := h.Store.Peers(ctx, userID, 200)
+	if err != nil {
+		slog.Error("presence peers failed", "err", err)
+		return
+	}
+	b, _ := json.Marshal(outbound{Type: "presence", UserID: userID, Online: &online, LastSeenAt: lastSeen})
+	for _, p := range peers {
+		h.Hub.Publish(ctx, p, b)
+	}
+}
+
+func (h *Handlers) handlePresenceQuery(ctx context.Context, c *client, userID string) {
+	if !auth.IsUUID(userID) {
+		return
+	}
+	online := h.Hub.IsOnline(ctx, userID)
+	f := outbound{Type: "presence", UserID: userID, Online: &online}
+	if !online {
+		if u, err := h.Auth.Store.UserByID(ctx, userID); err == nil {
+			f.LastSeenAt = u.LastSeenAt
+		}
+	}
+	c.sendJSON(f)
 }
 
 // identityMatches reports whether identityKey (base64) is the recipient's
