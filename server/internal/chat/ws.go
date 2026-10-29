@@ -186,8 +186,11 @@ func (h *Handlers) readLoop(ctx context.Context, c *client) {
 			}
 		case "typing":
 			if auth.IsUUID(in.To) && in.To != c.userID {
-				b, _ := json.Marshal(outbound{Type: "typing", From: c.userID})
-				h.Hub.Publish(ctx, in.To, b)
+				// Someone who blocked you doesn't see you typing.
+				if blocked, err := h.Auth.Store.HasBlocked(ctx, in.To, c.userID); err == nil && !blocked {
+					b, _ := json.Marshal(outbound{Type: "typing", From: c.userID})
+					h.Hub.Publish(ctx, in.To, b)
+				}
 			}
 		default:
 			c.sendJSON(outbound{Type: "error", Code: "unknown_type", Error: "unknown frame type"})
@@ -293,7 +296,7 @@ func (h *Handlers) wentOffline(userID string) {
 func (h *Handlers) announcePresence(userID string, online bool, lastSeen *time.Time) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	peers, err := h.Store.Peers(ctx, userID, 200)
+	peers, err := h.Store.PresenceAudience(ctx, userID, 200)
 	if err != nil {
 		slog.Error("presence peers failed", "err", err)
 		return
@@ -306,6 +309,12 @@ func (h *Handlers) announcePresence(userID string, online bool, lastSeen *time.T
 
 func (h *Handlers) handlePresenceQuery(ctx context.Context, c *client, userID string) {
 	if !auth.IsUUID(userID) {
+		return
+	}
+	// Hidden last seen hides being online too: answer "offline, no time".
+	if ok, err := h.Auth.Store.CanSeeLastSeen(ctx, c.userID, userID); err != nil || !ok {
+		off := false
+		c.sendJSON(outbound{Type: "presence", UserID: userID, Online: &off})
 		return
 	}
 	online := h.Hub.IsOnline(ctx, userID)

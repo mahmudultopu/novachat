@@ -1,5 +1,6 @@
 package app.novachat.ui.chat
 
+import app.novachat.data.ApiException
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
@@ -117,6 +118,7 @@ fun ChatScreen(peerId: String, onBack: () -> Unit, openInfo: (isGroup: Boolean) 
     val typing by remember(peerId) { repo.isTyping(peerId) }.collectAsStateWithLifecycle(initialValue = false)
     val presence by remember(peerId) { repo.presence(peerId) }.collectAsStateWithLifecycle(initialValue = null)
     val waitingForKeys by remember(peerId) { repo.waitingForKeys(peerId) }.collectAsStateWithLifecycle(initialValue = false)
+    val blocked by remember(peerId) { repo.isBlocked(peerId) }.collectAsStateWithLifecycle(initialValue = false)
     val session by container.session.collectAsStateWithLifecycle()
     val myId = (session as? SessionState.SignedIn)?.session?.user?.id
 
@@ -323,7 +325,7 @@ fun ChatScreen(peerId: String, onBack: () -> Unit, openInfo: (isGroup: Boolean) 
                     }
                 },
                 actions = {
-                    if (group == null) {
+                    if (group == null && !blocked) {
                         IconButton(onClick = { startCall(peerId, true) }) {
                             Icon(painterResource(R.drawable.ic_videocam), "Video call")
                         }
@@ -403,7 +405,28 @@ fun ChatScreen(peerId: String, onBack: () -> Unit, openInfo: (isGroup: Boolean) 
                 ComposerBanner("Editing message", previewText(e), onClose = { editing = null; draft = "" })
             }
             val g = group
-            if (g != null && !g.canSend(myId)) {
+            if (g == null && blocked) {
+                Surface(
+                    onClick = {
+                        scope.launch {
+                            try {
+                                repo.unblock(peerId)
+                            } catch (e: ApiException) {
+                                toast(e.message)
+                            }
+                        }
+                    },
+                    color = MaterialTheme.colorScheme.surface,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        "You blocked this contact. Tap to unblock.",
+                        textAlign = TextAlign.Center,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(20.dp),
+                    )
+                }
+            } else if (g != null && !g.canSend(myId)) {
                 Surface(color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxWidth()) {
                     Text(
                         if (g.left || g.member(myId) == null) "You're no longer in this group" else "Only admins can send messages",

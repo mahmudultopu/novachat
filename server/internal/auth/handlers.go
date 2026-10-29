@@ -29,6 +29,12 @@ func (h *Handlers) Register(mux *http.ServeMux) {
 	mux.Handle("PUT /v1/me/avatar", h.Require(http.HandlerFunc(h.setAvatar)))
 	mux.Handle("DELETE /v1/me/avatar", h.Require(http.HandlerFunc(h.removeAvatar)))
 	mux.Handle("GET /v1/avatars/{id}", h.Require(http.HandlerFunc(h.avatar)))
+	mux.Handle("GET /v1/me/privacy", h.Require(http.HandlerFunc(h.privacy)))
+	mux.Handle("PATCH /v1/me/privacy", h.Require(http.HandlerFunc(h.updatePrivacy)))
+	mux.Handle("GET /v1/blocks", h.Require(http.HandlerFunc(h.blocked)))
+	mux.Handle("PUT /v1/blocks/{id}", h.Require(http.HandlerFunc(h.block)))
+	mux.Handle("DELETE /v1/blocks/{id}", h.Require(http.HandlerFunc(h.unblock)))
+	mux.Handle("POST /v1/reports", h.Require(http.HandlerFunc(h.report)))
 }
 
 func (h *Handlers) requestCode(w http.ResponseWriter, r *http.Request) {
@@ -147,7 +153,7 @@ func (h *Handlers) userByPhone(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusBadRequest, "invalid_phone", err.Error())
 		return
 	}
-	u, err := h.Store.UserByPhone(r.Context(), phone)
+	u, err := h.Store.UserByPhoneFor(r.Context(), UserID(r.Context()), phone)
 	if errors.Is(err, ErrNotFound) {
 		httpx.Error(w, http.StatusNotFound, "not_on_novachat", "this number is not on NovaChat yet")
 		return
@@ -164,7 +170,8 @@ func (h *Handlers) userByID(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handlers) writeUser(w http.ResponseWriter, r *http.Request, id string) {
-	u, err := h.Store.UserByID(r.Context(), id)
+	// Others see only what the user's privacy settings share with them.
+	u, err := h.Store.UserFor(r.Context(), UserID(r.Context()), id)
 	if errors.Is(err, ErrNotFound) {
 		httpx.Error(w, http.StatusNotFound, "not_found", "user not found")
 		return

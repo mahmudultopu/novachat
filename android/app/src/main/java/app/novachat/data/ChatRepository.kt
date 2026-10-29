@@ -84,6 +84,14 @@ class ChatRepository(
     /** People we have messages queued for who haven't opened NovaChat since signing up. */
     private val _waitingForKeys = MutableStateFlow<Set<String>>(emptySet())
 
+    private val _blocked = MutableStateFlow<Set<String>>(emptySet())
+    /** People whose messages and calls this phone drops. */
+    val blocked: StateFlow<Set<String>> = _blocked
+
+    /** Whether we tell people when we've read their messages (not in groups). */
+    @Volatile
+    private var sendReadReceipts = true
+
     /** Who is typing to us right now, with when their indicator expires. */
     private val typing = MutableStateFlow<Map<String, Long>>(emptyMap())
     private var openPeer: String? = null
@@ -418,6 +426,10 @@ class ChatRepository(
                         dao.putMeta(MetaEntity(OWNER, newSession.user.id))
                     }
                 }
+                // Known before catching up, so blocked people's messages are dropped even offline.
+                _blocked.value = dao.meta(BLOCKED)?.let { runCatching { NovaJson.decodeFromString<List<String>>(it) }.getOrNull() }
+                    .orEmpty().toSet()
+                sendReadReceipts = dao.meta(READ_RECEIPTS) != "0"
                 // Subscribe to frames before connecting so "ready" is never missed.
                 launch(start = CoroutineStart.UNDISPATCHED) { socket.frames.collect(::onFrame) }
                 connectIfCurrent(newSession)
@@ -459,6 +471,7 @@ class ChatRepository(
         myId.value = null
         typing.value = emptyMap()
         _presence.value = emptyMap()
+        _blocked.value = emptySet()
         if (clearData) {
             scope.launch {
                 writeLock.withLock {
@@ -905,9 +918,68 @@ class ChatRepository(
     private suspend fun markRead(peerId: String) {
         val me = session?.user?.id ?: return
         val unread = dao.unreadIds(peerId, me)
-        if (unread.isNotEmpty() && sendReceipt("read", unread)) {
+        if (unread.isEmpty()) return
+        // With read receipts off, a chat is read only here (groups always send them).
+        val tell = sendReadReceipts || dao.groupNow(peerId) != null
+        if (!tell || sendReceipt("read", unread)) {
             dao.markReadHere(me, unread, OffsetDateTime.now().toString())
         }
+    }
+
+    fun isBlocked(peerId: String): Flow<Boolean> = _blocked.map { peerId in it }
+
+    /** Blocks someone: they can't see your photo, about or last seen, and their messages and calls stop reaching you. */
+    suspend fun block(peerId: String) {
+        val s = session ?: return
+        api.block(s, peerId)
+        saveBlocked(_blocked.value + peerId)
+    }
+
+    suspend fun unblock(peerId: String) {
+        val s = session ?: return
+        api.unblock(s, peerId)
+        saveBlocked(_blocked.value - peerId)
+    }
+
+    /** Reports someone to whoever runs the server, and blocks them too if [alsoBlock]. */
+    suspend fun report(peerId: String, reason: String, alsoBlock: Boolean) {
+        val s = session ?: return
+        api.report(s, peerId, reason, alsoBlock)
+        if (alsoBlock) saveBlocked(_blocked.value + peerId)
+    }
+
+    /** Everyone you've blocked, fresh from the server. */
+    suspend fun blockedPeople(): List<User> {
+        val s = session ?: return emptyList()
+        return refreshBlocked(s)
+    }
+
+    private suspend fun refreshBlocked(s: Session): List<User> {
+        val people = api.blocked(s)
+        people.forEach { dao.upsertUser(it.toEntity()) }
+        saveBlocked(people.map { it.id }.toSet())
+        return people
+    }
+
+    private suspend fun saveBlocked(ids: Set<String>) {
+        _blocked.value = ids
+        dao.putMeta(MetaEntity(BLOCKED, NovaJson.encodeToString(ids.toList())))
+    }
+
+    suspend fun privacy(): PrivacySettings {
+        val s = session ?: throw ApiException(0, "signed_out", "Not signed in")
+        return api.privacy(s).also { saveReadReceipts(it.readReceipts) }
+    }
+
+    /** Changes privacy settings; [changes] holds only the ones to change. */
+    suspend fun updatePrivacy(changes: kotlinx.serialization.json.JsonObject): PrivacySettings {
+        val s = session ?: throw ApiException(0, "signed_out", "Not signed in")
+        return api.updatePrivacy(s, changes).also { saveReadReceipts(it.readReceipts) }
+    }
+
+    private suspend fun saveReadReceipts(on: Boolean) {
+        sendReadReceipts = on
+        dao.putMeta(MetaEntity(READ_RECEIPTS, if (on) "1" else "0"))
     }
 
     /**
@@ -1242,6 +1314,12 @@ class ChatRepository(
         }
         try {
             refreshGroups(s)
+            try {
+                refreshBlocked(s)
+            } catch (e: ApiException) {
+                if (e.status == 401) throw e
+                // Keep the block list saved on this phone until the next reconnect.
+            }
             while (true) {
                 val page = api.sync(s, dao.lastSeq() ?: 0L, SYNC_PAGE)
                 applyMessages(page)
@@ -1275,7 +1353,11 @@ class ChatRepository(
         changedGroups.forEach { refreshGroup(it) }
 
         // Tell senders their messages reached this phone, and mark the open chat read.
-        sendReceipt("delivered", dtos.filter { it.recipientId == me && it.senderId != me && it.deliveredAt == null }.map { it.id })
+        val blocked = _blocked.value
+        sendReceipt(
+            "delivered",
+            dtos.filter { it.recipientId == me && it.senderId != me && it.deliveredAt == null && it.senderId !in blocked }.map { it.id },
+        )
         if (appActive) openPeer?.let { markRead(it) }
 
         val unknown = dtos.flatMap { listOf(it.senderId, it.recipientId) }.toSet() - dao.userIds().toSet() - me
@@ -1373,6 +1455,8 @@ class ChatRepository(
                             )
                         }
                     }
+                    // Blocked: keep a hidden row so it's not fetched again, and show nothing (calls included).
+                    dto.senderId in _blocked.value -> dao.insertMessage(base.copy(body = "", control = "{}"))
                     content.isControl -> {
                         dao.insertMessage(base.copy(body = "", control = NovaJson.encodeToString(content)))
                         applyControl(dto.senderId, peer, content, base.createdAtMillis)
@@ -1471,6 +1555,8 @@ class ChatRepository(
         const val RETRY_MS = 30_000L
         val FALLBACK_ICE = listOf(IceServerDto(urls = listOf("stun:stun.l.google.com:19302")))
         const val OWNER = "owner_user_id"
+        const val BLOCKED = "blocked_user_ids"
+        const val READ_RECEIPTS = "read_receipts"
         const val EDIT_WINDOW_MS = 15 * 60_000L
         const val DELETE_WINDOW_MS = 48 * 3_600_000L
         /** Phones' clocks drift; be lenient when checking someone else's limits. */

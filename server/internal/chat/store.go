@@ -140,14 +140,20 @@ func (s *Store) History(ctx context.Context, userID, peerID string, before int64
 	return msgs, err
 }
 
-// Peers returns everyone userID has exchanged messages with, most recent
-// first. Presence changes are sent to them.
-func (s *Store) Peers(ctx context.Context, userID string, limit int) ([]string, error) {
+// PresenceAudience returns who should hear that userID came online or went
+// offline: the people they chat with, minus anyone they blocked or whom
+// their last seen setting leaves out.
+func (s *Store) PresenceAudience(ctx context.Context, userID string, limit int) ([]string, error) {
 	rows, err := s.DB.Query(ctx, `
 		SELECT peer::text FROM (
 			SELECT CASE WHEN sender_id = $1 THEN recipient_id ELSE sender_id END AS peer, max(id) AS last
 			FROM messages WHERE (sender_id = $1 OR recipient_id = $1) AND group_id IS NULL GROUP BY 1
-		) p WHERE peer <> $1 ORDER BY last DESC LIMIT $2`, userID, limit)
+		) p JOIN users u ON u.id = $1
+		WHERE peer <> $1
+		  AND NOT EXISTS (SELECT 1 FROM blocks b WHERE b.blocker_id = $1 AND b.blocked_id = p.peer)
+		  AND (u.last_seen_privacy = 'everyone' OR (u.last_seen_privacy = 'chats' AND EXISTS (
+		      SELECT 1 FROM messages m WHERE m.sender_id = $1 AND m.recipient_id = p.peer AND m.group_id IS NULL)))
+		ORDER BY last DESC LIMIT $2`, userID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -174,7 +180,7 @@ func (s *Store) Conversations(ctx context.Context, userID string) ([]Conversatio
 		)
 		SELECT last.id, last.client_id::text, last.sender_id::text, last.recipient_id::text, last.body, last.envelope,
 		       last.created_at, last.delivered_at, last.read_at,
-		       u.id::text, u.phone, u.name, u.about, u.created_at, u.avatar_id::text, u.last_seen_at,
+		       `+auth.VisibleCols("$1")+`,
 		       (SELECT count(*) FROM messages x
 		         WHERE x.sender_id = last.peer AND x.recipient_id = $1 AND x.read_at IS NULL)
 		FROM last JOIN users u ON u.id = last.peer

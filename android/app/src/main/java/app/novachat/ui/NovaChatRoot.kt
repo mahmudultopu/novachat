@@ -34,6 +34,7 @@ import app.novachat.ui.call.CallScreen
 import app.novachat.ui.chat.ChatScreen
 import app.novachat.ui.chat.ContactInfoScreen
 import app.novachat.ui.home.HomeScreen
+import app.novachat.ui.settings.PrivacyScreen
 import app.novachat.ui.settings.ProfileScreen
 import app.novachat.ui.settings.StarredScreen
 import app.novachat.ui.status.StatusViewerScreen
@@ -107,6 +108,7 @@ private fun MainNav(inviteLink: String?, onInviteShown: () -> Unit, chatToOpen: 
                 openChat = { peerId -> nav.navigate("chat/$peerId") },
                 openProfile = { nav.navigate("profile") },
                 openStarred = { nav.navigate("starred") },
+                openPrivacy = { nav.navigate("privacy") },
                 openNewGroup = { nav.navigate("newgroup") },
                 openJoin = { joining = "" },
                 openStatus = { authorId -> nav.navigate("status/$authorId") },
@@ -149,6 +151,9 @@ private fun MainNav(inviteLink: String?, onInviteShown: () -> Unit, chatToOpen: 
         }
         composable("starred") {
             StarredScreen(onBack = { nav.popBackStack() }, openChat = { peerId -> nav.navigate("chat/$peerId") })
+        }
+        composable("privacy") {
+            PrivacyScreen(onBack = { nav.popBackStack() })
         }
         composable("profile") {
             ProfileScreen(onBack = { nav.popBackStack() })
