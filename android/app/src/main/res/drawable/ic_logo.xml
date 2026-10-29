@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The launcher mark as a plain vector, for use inside the app. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="72dp"
+    android:height="72dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path android:pathData="M54,14 a40,40 0 1,0 0.01,0 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="14"
+                android:startY="14"
+                android:endX="94"
+                android:endY="94"
+                android:startColor="#7B5CFF"
+                android:endColor="#3A1FC9" />
+        </aapt:attr>
+    </path>
+    <path android:fillColor="#FFFFFF" android:pathData="M42,32 H66 A12,12 0 0,1 78,44 V58 A12,12 0 0,1 66,70 H45 L33,79 L35,67 A12,12 0 0,1 30,58 V44 A12,12 0 0,1 42,32 Z" />
+    <path android:fillColor="#5B3DF5" android:pathData="M54,39.5 Q55.6,49.4 65.5,51 Q55.6,52.6 54,62.5 Q52.4,52.6 42.5,51 Q52.4,49.4 54,39.5 Z" />
+    <path android:fillColor="#19C6B4" android:pathData="M65,36 a3,3 0 1,0 6,0 a3,3 0 1,0 -6,0 Z" />
+</vector>
