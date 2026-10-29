@@ -134,6 +134,18 @@ data class ChatPrefs(
     val muted: Boolean get() = mutedUntilMillis != null && mutedUntilMillis > System.currentTimeMillis()
 }
 
+/**
+ * Who sees your last seen, photo and about: "everyone", "chats" (people
+ * you've messaged) or "nobody"; and whether you send read receipts.
+ */
+@Serializable
+data class PrivacySettings(
+    @SerialName("last_seen") val lastSeen: String = "everyone",
+    val photo: String = "everyone",
+    val about: String = "everyone",
+    @SerialName("read_receipts") val readReceipts: Boolean = true,
+)
+
 @Serializable
 data class GroupMemberDto(val user: User, val role: String)
 

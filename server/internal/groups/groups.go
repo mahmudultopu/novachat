@@ -609,9 +609,9 @@ func load(ctx context.Context, q interface {
 		g.InviteCode = nil
 	}
 	rows, err := q.Query(ctx, `
-		SELECT u.id::text, u.phone, u.name, u.about, u.created_at, u.avatar_id::text, u.last_seen_at, m.role, m.joined_at
+		SELECT `+auth.VisibleCols("$2")+`, m.role, m.joined_at
 		FROM group_members m JOIN users u ON u.id = m.user_id
-		WHERE m.group_id = $1 ORDER BY m.joined_at`, groupID)
+		WHERE m.group_id = $1 ORDER BY m.joined_at`, groupID, userID)
 	if err != nil {
 		return g, err
 	}

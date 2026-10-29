@@ -373,6 +373,23 @@ changed it. In a group, only people who may edit the group info can change it.
   server never fetches it again.
 * Messages sent before the timer was turned on stay.
 
+### Block, report and privacy
+
+* **Settings → Privacy** sets who sees your last seen and online, profile
+  photo and about: everyone, people you've messaged, or nobody. The server
+  applies this to every profile it hands out. Hiding your last seen also
+  hides when you're online.
+* **Read receipts** off: your phone stops sending "read" for one-to-one
+  chats. Groups still send them.
+* **Block** from a contact's info. The server stops showing them your photo,
+  about and last seen, and stops passing on their typing. Your phone drops their messages and calls
+  without telling them, so their messages stay on one grey tick. Because
+  messages are end-to-end encrypted, the phone only knows a message is a
+  direct one, not a group copy, after decrypting it, so their group messages
+  still show.
+* **Report** sends only the reason you pick (messages stay encrypted) to the
+  `reports` table for whoever runs the server, and can block them at once.
+
 ### API
 
 | Method and path | Auth | Purpose |
@@ -384,7 +401,10 @@ changed it. In a group, only people who may edit the group info can change it.
 | `PUT /v1/me/avatar` (JPEG), `DELETE /v1/me/avatar` | Bearer | Set or remove your profile photo |
 | `GET /v1/avatars/{id}` | Bearer | Download a profile photo |
 | `GET /v1/users/by-phone?phone=` | Bearer | Find someone to chat with |
-| `GET /v1/users/{id}` | Bearer | Someone's public profile |
+| `GET /v1/users/{id}` | Bearer | Someone's profile, as their privacy settings let you see it |
+| `GET`, `PATCH /v1/me/privacy` `{last_seen, photo, about, read_receipts}` | Bearer | Your privacy settings |
+| `GET /v1/blocks`, `PUT`, `DELETE /v1/blocks/{id}` | Bearer | List, block or unblock people |
+| `POST /v1/reports` `{user_id, reason, block}` | Bearer | Report someone, optionally blocking them |
 | `GET /v1/conversations` | Bearer | Chats with last message and unread count |
 | `GET /v1/messages?peer=&before=&limit=` | Bearer | Older messages in one chat |
 | `GET /v1/sync?after=&limit=` | Bearer | Everything since a message id |
@@ -473,6 +493,7 @@ Following the builder guide, in order:
    [Voice and video calls](#voice-and-video-calls). Group calls come next.
 10. **Chat controls**: ~~pin, mute and archive~~ (done in 0.11.0, see
     [Pin, mute and archive](#pin-mute-and-archive)), ~~disappearing
-    messages~~ (done in 0.12.0, see [Disappearing messages](#disappearing-messages));
-    block, report and privacy settings next.
+    messages~~ (done in 0.12.0, see [Disappearing messages](#disappearing-messages)),
+    ~~block, report and privacy settings~~ (done in 0.13.0, see
+    [Block, report and privacy](#block-report-and-privacy)).
 11. A real **SMS provider** for production sign-up, and deployment.

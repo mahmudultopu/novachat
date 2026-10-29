@@ -131,6 +131,31 @@ class ApiClient(private val http: OkHttpClient) {
     suspend fun joinInvite(session: Session, code: String): GroupDto =
         call(session.serverUrl, "POST", "/v1/invites/$code/join", session.token, null)
 
+    suspend fun privacy(session: Session): PrivacySettings =
+        call(session.serverUrl, "GET", "/v1/me/privacy", session.token, null)
+
+    suspend fun updatePrivacy(session: Session, changes: JsonObject): PrivacySettings =
+        call(session.serverUrl, "PATCH", "/v1/me/privacy", session.token, changes)
+
+    suspend fun blocked(session: Session): List<User> =
+        call(session.serverUrl, "GET", "/v1/blocks", session.token, null)
+
+    suspend fun block(session: Session, userId: String) {
+        call<Unit>(session.serverUrl, "PUT", "/v1/blocks/$userId", session.token, null)
+    }
+
+    suspend fun unblock(session: Session, userId: String) {
+        call<Unit>(session.serverUrl, "DELETE", "/v1/blocks/$userId", session.token, null)
+    }
+
+    suspend fun report(session: Session, userId: String, reason: String, block: Boolean) {
+        call<Unit>(session.serverUrl, "POST", "/v1/reports", session.token, buildJsonObject {
+            put("user_id", userId)
+            put("reason", reason)
+            put("block", block)
+        })
+    }
+
     suspend fun sync(session: Session, after: Long, limit: Int): List<MessageDto> =
         call(session.serverUrl, "GET", "/v1/sync", session.token, null,
             mapOf("after" to after.toString(), "limit" to limit.toString()))

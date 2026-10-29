@@ -101,6 +101,8 @@ fun ContactInfoScreen(peerId: String, onBack: () -> Unit) {
                     }
                 }
             }
+            Spacer(Modifier.height(12.dp))
+            BlockAndReport(peerId, name)
         }
     }
 }

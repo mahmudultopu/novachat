@@ -74,6 +74,10 @@ func TestEndToEnd(t *testing.T) {
 
 	aws := dial(t, srv.URL, alice.token)
 	bws := dial(t, srv.URL, bob.token)
+	// Let Bob's "online" announcement go out while he has no chats yet. If it
+	// raced Alice's first message, Alice would get a stray presence frame
+	// that the presence checks below would mistake for their answer.
+	time.Sleep(100 * time.Millisecond)
 
 	clientID := "0b6a9f3e-7c1d-4d5e-9f00-1234567890ab"
 	send := map[string]string{"type": "send", "client_id": clientID, "to": bob.id, "body": "  Hello Bob  "}

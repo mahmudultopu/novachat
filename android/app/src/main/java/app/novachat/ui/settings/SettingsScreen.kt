@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -41,7 +42,7 @@ import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(openProfile: () -> Unit, openStarred: () -> Unit, modifier: Modifier = Modifier) {
+fun SettingsScreen(openProfile: () -> Unit, openStarred: () -> Unit, openPrivacy: () -> Unit, modifier: Modifier = Modifier) {
     val container = appContainer()
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -82,6 +83,26 @@ fun SettingsScreen(openProfile: () -> Unit, openStarred: () -> Unit, modifier: M
                     Icon(Icons.Filled.Star, null, tint = MaterialTheme.colorScheme.primary)
                     Spacer(Modifier.width(16.dp))
                     Text("Starred messages", style = MaterialTheme.typography.titleSmall)
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            Surface(
+                onClick = openPrivacy,
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 1.dp,
+            ) {
+                Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Filled.Lock, null, tint = MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.width(16.dp))
+                    Column {
+                        Text("Privacy", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            "Last seen, profile photo, read receipts, blocked contacts",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
             }
             Spacer(Modifier.height(12.dp))
