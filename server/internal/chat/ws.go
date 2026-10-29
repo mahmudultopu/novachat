@@ -1,7 +1,9 @@
 package chat
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -13,25 +15,31 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/mahmudultopu/novachat/server/internal/auth"
+	"github.com/mahmudultopu/novachat/server/internal/keys"
 )
 
 const (
 	writeWait      = 10 * time.Second
 	pongWait       = 60 * time.Second
 	pingInterval   = 25 * time.Second
-	maxFrameBytes  = 64 << 10
+	maxFrameBytes  = 256 << 10
 	maxBodyRunes   = 4096
+	maxEnvelope    = 192 << 10
 	sendBufferSize = 256
 )
 
 // Frames sent by the app.
 type inbound struct {
-	Type       string  `json:"type"` // "send", "receipt" or "typing"
-	ClientID   string  `json:"client_id,omitempty"`
-	To         string  `json:"to,omitempty"`
-	Body       string  `json:"body,omitempty"`
-	Status     string  `json:"status,omitempty"` // "delivered" or "read"
-	MessageIDs []int64 `json:"message_ids,omitempty"`
+	Type     string `json:"type"` // "send", "receipt" or "typing"
+	ClientID string `json:"client_id,omitempty"`
+	To       string `json:"to,omitempty"`
+	Body     string `json:"body,omitempty"`
+	// Encrypted messages: the opaque envelope, and the recipient identity
+	// key it was encrypted to (base64), so a stale session is caught.
+	Envelope    string  `json:"envelope,omitempty"`
+	IdentityKey string  `json:"identity_key,omitempty"`
+	Status      string  `json:"status,omitempty"` // "delivered" or "read"
+	MessageIDs  []int64 `json:"message_ids,omitempty"`
 }
 
 // Frames sent by the server.
@@ -164,6 +172,7 @@ func (h *Handlers) handleSend(ctx context.Context, c *client, in inbound) {
 		c.sendJSON(outbound{Type: "error", Code: code, Error: msg, ClientID: in.ClientID})
 	}
 	body := strings.TrimSpace(in.Body)
+	var envelope *string
 	switch {
 	case !auth.IsUUID(in.ClientID):
 		fail("bad_client_id", "client_id must be a UUID")
@@ -171,6 +180,18 @@ func (h *Handlers) handleSend(ctx context.Context, c *client, in inbound) {
 	case !auth.IsUUID(in.To):
 		fail("bad_recipient", "to must be a user id")
 		return
+	case in.Envelope != "":
+		if len(in.Envelope) > maxEnvelope {
+			fail("too_long", "message is too long")
+			return
+		}
+		if !h.identityMatches(ctx, in.To, in.IdentityKey) {
+			// The recipient reinstalled or moved to a new phone: the app
+			// fetches their new keys and encrypts again.
+			fail("stale_identity", "recipient has new encryption keys")
+			return
+		}
+		body, envelope = "", &in.Envelope
 	case body == "":
 		fail("empty", "message is empty")
 		return
@@ -178,7 +199,7 @@ func (h *Handlers) handleSend(ctx context.Context, c *client, in inbound) {
 		fail("too_long", "message is too long")
 		return
 	}
-	m, inserted, err := h.Store.Insert(ctx, c.userID, strings.ToLower(in.ClientID), in.To, body)
+	m, inserted, err := h.Store.Insert(ctx, c.userID, strings.ToLower(in.ClientID), in.To, body, envelope)
 	if errors.Is(err, ErrUnknownRecipient) {
 		fail("bad_recipient", err.Error())
 		return
@@ -195,6 +216,23 @@ func (h *Handlers) handleSend(ctx context.Context, c *client, in inbound) {
 	if inserted && m.RecipientID != c.userID {
 		h.Hub.Publish(ctx, m.RecipientID, b)
 	}
+}
+
+// identityMatches reports whether identityKey (base64) is the recipient's
+// current identity key in the key directory.
+func (h *Handlers) identityMatches(ctx context.Context, userID, identityKey string) bool {
+	want, err := base64.StdEncoding.DecodeString(identityKey)
+	if err != nil || len(want) == 0 {
+		return false
+	}
+	have, err := h.Keys.IdentityKey(ctx, userID)
+	if err != nil {
+		if !errors.Is(err, keys.ErrNoKeys) {
+			slog.Error("identity lookup failed", "err", err)
+		}
+		return false
+	}
+	return bytes.Equal(have, want)
 }
 
 func (h *Handlers) handleReceipt(ctx context.Context, c *client, in inbound) {

@@ -203,6 +203,9 @@ func UserID(ctx context.Context) string {
 	return id
 }
 
+// BearerToken returns the token the request was authenticated with.
+func BearerToken(r *http.Request) string { return bearerToken(r) }
+
 func bearerToken(r *http.Request) string {
 	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
 		return strings.TrimPrefix(h, "Bearer ")

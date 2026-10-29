@@ -95,6 +95,14 @@ func (s *Store) DeleteSession(ctx context.Context, token string) error {
 	return err
 }
 
+// DeleteOtherSessions signs userID out everywhere except the device holding
+// keepToken. NovaChat is one phone per account (like a SIM): a phone that
+// publishes new encryption keys takes the account over.
+func (s *Store) DeleteOtherSessions(ctx context.Context, userID, keepToken string) error {
+	_, err := s.DB.Exec(ctx, `DELETE FROM sessions WHERE user_id = $1 AND token_hash <> $2`, userID, hashToken(keepToken))
+	return err
+}
+
 func hashToken(token string) []byte {
 	sum := sha256.Sum256([]byte(token))
 	return sum[:]

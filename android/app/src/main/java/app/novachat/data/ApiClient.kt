@@ -5,6 +5,8 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.encodeToJsonElement
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
@@ -49,6 +51,12 @@ class ApiClient(private val http: OkHttpClient) {
     suspend fun sync(session: Session, after: Long, limit: Int): List<MessageDto> =
         call(session.serverUrl, "GET", "/v1/sync", session.token, null,
             mapOf("after" to after.toString(), "limit" to limit.toString()))
+
+    suspend fun publishKeys(session: Session, keys: PublishKeysRequest): PublishKeysResponse =
+        call(session.serverUrl, "PUT", "/v1/keys", session.token, NovaJson.encodeToJsonElement(keys).jsonObject)
+
+    suspend fun keyBundle(session: Session, userId: String): KeyBundleDto =
+        call(session.serverUrl, "GET", "/v1/keys/$userId", session.token, null)
 
     private suspend inline fun <reified T> call(
         baseUrl: String,

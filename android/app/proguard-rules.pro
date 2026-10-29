@@ -4,3 +4,7 @@
     *** Companion;
     kotlinx.serialization.KSerializer serializer(...);
 }
+
+# Tink (end-to-end encryption) references compile-only annotations.
+-dontwarn com.google.errorprone.annotations.**
+-dontwarn javax.annotation.**

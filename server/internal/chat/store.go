@@ -19,6 +19,7 @@ type Message struct {
 	SenderID    string     `json:"sender_id"`
 	RecipientID string     `json:"recipient_id"`
 	Body        string     `json:"body"`
+	Envelope    *string    `json:"envelope,omitempty"` // end-to-end encrypted content
 	CreatedAt   time.Time  `json:"created_at"`
 	DeliveredAt *time.Time `json:"delivered_at"`
 	ReadAt      *time.Time `json:"read_at"`
@@ -36,11 +37,11 @@ type Store struct {
 	DB *pgxpool.Pool
 }
 
-const msgCols = `id, client_id::text, sender_id::text, recipient_id::text, body, created_at, delivered_at, read_at`
+const msgCols = `id, client_id::text, sender_id::text, recipient_id::text, body, envelope, created_at, delivered_at, read_at`
 
 func scanMessage(row pgx.Row) (Message, error) {
 	var m Message
-	err := row.Scan(&m.ID, &m.ClientID, &m.SenderID, &m.RecipientID, &m.Body, &m.CreatedAt, &m.DeliveredAt, &m.ReadAt)
+	err := row.Scan(&m.ID, &m.ClientID, &m.SenderID, &m.RecipientID, &m.Body, &m.Envelope, &m.CreatedAt, &m.DeliveredAt, &m.ReadAt)
 	return m, err
 }
 
@@ -60,14 +61,15 @@ func collectMessages(rows pgx.Rows, err error) ([]Message, error) {
 	return out, rows.Err()
 }
 
-// Insert stores a message. Sending the same client_id twice (a retry after a
-// dropped connection) returns the original message with inserted=false.
-func (s *Store) Insert(ctx context.Context, senderID, clientID, recipientID, body string) (Message, bool, error) {
+// Insert stores a message: either a plain body or an end-to-end encrypted
+// envelope. Sending the same client_id twice (a retry after a dropped
+// connection) returns the original message with inserted=false.
+func (s *Store) Insert(ctx context.Context, senderID, clientID, recipientID, body string, envelope *string) (Message, bool, error) {
 	m, err := scanMessage(s.DB.QueryRow(ctx, `
-		INSERT INTO messages (client_id, sender_id, recipient_id, body)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO messages (client_id, sender_id, recipient_id, body, envelope)
+		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (sender_id, client_id) DO NOTHING
-		RETURNING `+msgCols, clientID, senderID, recipientID, body))
+		RETURNING `+msgCols, clientID, senderID, recipientID, body, envelope))
 	if err == nil {
 		return m, true, nil
 	}
@@ -130,7 +132,7 @@ func (s *Store) Conversations(ctx context.Context, userID string) ([]Conversatio
 		), last AS (
 			SELECT DISTINCT ON (peer) * FROM mine ORDER BY peer, id DESC
 		)
-		SELECT last.id, last.client_id::text, last.sender_id::text, last.recipient_id::text, last.body,
+		SELECT last.id, last.client_id::text, last.sender_id::text, last.recipient_id::text, last.body, last.envelope,
 		       last.created_at, last.delivered_at, last.read_at,
 		       u.id::text, u.phone, u.name, u.about, u.created_at,
 		       (SELECT count(*) FROM messages x
@@ -145,7 +147,7 @@ func (s *Store) Conversations(ctx context.Context, userID string) ([]Conversatio
 	for rows.Next() {
 		var c Conversation
 		m := &c.LastMessage
-		if err := rows.Scan(&m.ID, &m.ClientID, &m.SenderID, &m.RecipientID, &m.Body, &m.CreatedAt, &m.DeliveredAt, &m.ReadAt,
+		if err := rows.Scan(&m.ID, &m.ClientID, &m.SenderID, &m.RecipientID, &m.Body, &m.Envelope, &m.CreatedAt, &m.DeliveredAt, &m.ReadAt,
 			&c.Peer.ID, &c.Peer.Phone, &c.Peer.Name, &c.Peer.About, &c.Peer.CreatedAt, &c.Unread); err != nil {
 			return nil, err
 		}

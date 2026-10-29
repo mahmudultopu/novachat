@@ -3,6 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -112,6 +115,87 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("conversations %+v", convs)
 	}
 
+	// End-to-end encryption: Bob publishes keys, Alice claims a bundle and
+	// sends an envelope the server stores but cannot read.
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	identity, spk := randomKey(), randomKey()
+	keysReq := map[string]any{
+		"identity_key":  identity,
+		"signing_key":   []byte(pub),
+		"signed_prekey": map[string]any{"id": 1, "public_key": spk, "signature": ed25519.Sign(priv, spk)},
+		"one_time_prekeys": []map[string]any{
+			{"id": 7, "public_key": randomKey()},
+			{"id": 8, "public_key": randomKey()},
+		},
+	}
+	var left struct {
+		OneTimePreKeys int `json:"one_time_prekeys"`
+	}
+	if code := do(t, "PUT", srv.URL+"/v1/keys", bob.token, keysReq, &left); code != 200 || left.OneTimePreKeys != 2 {
+		t.Fatalf("publish keys: status %d, left %d", code, left.OneTimePreKeys)
+	}
+	badSig := map[string]any{"identity_key": identity, "signing_key": []byte(pub),
+		"signed_prekey": map[string]any{"id": 1, "public_key": spk, "signature": make([]byte, 64)}}
+	if code := do(t, "PUT", srv.URL+"/v1/keys", bob.token, badSig, nil); code != http.StatusBadRequest {
+		t.Fatalf("bad signature accepted: status %d", code)
+	}
+	var bundle struct {
+		IdentityKey   []byte `json:"identity_key"`
+		OneTimePreKey *struct {
+			ID int `json:"id"`
+		} `json:"one_time_prekey"`
+	}
+	for _, want := range []int{7, 8, 0} {
+		bundle.OneTimePreKey = nil
+		if code := get(t, srv.URL+"/v1/keys/"+bob.id, alice.token, &bundle); code != 200 || !bytes.Equal(bundle.IdentityKey, identity) {
+			t.Fatalf("claim bundle: status %d", code)
+		}
+		got := 0
+		if bundle.OneTimePreKey != nil {
+			got = bundle.OneTimePreKey.ID
+		}
+		if got != want {
+			t.Fatalf("claimed one-time prekey %d, want %d", got, want)
+		}
+	}
+	if code := get(t, srv.URL+"/v1/keys/"+alice.id, bob.token, nil); code != http.StatusNotFound {
+		t.Fatalf("bundle for user without keys: status %d", code)
+	}
+
+	encSend := map[string]string{"type": "send", "client_id": "1b6a9f3e-7c1d-4d5e-9f00-1234567890ab", "to": bob.id,
+		"envelope": `{"v":1,"ct":"opaque"}`, "identity_key": base64.StdEncoding.EncodeToString(randomKey())}
+	aws.WriteJSON(encSend)
+	if f := readType(t, aws, "error"); f.Code != "stale_identity" {
+		t.Fatalf("stale identity not caught: %+v", f)
+	}
+	encSend["identity_key"] = base64.StdEncoding.EncodeToString(identity)
+	aws.WriteJSON(encSend)
+	enc := readType(t, bws, "message")
+	if enc.Message.Envelope == nil || *enc.Message.Envelope != encSend["envelope"] || enc.Message.Body != "" {
+		t.Fatalf("encrypted message %+v", enc.Message)
+	}
+
+	// Bob moves to a new phone: its new identity key signs the old phone out.
+	var codeResp struct {
+		DevCode string `json:"dev_code"`
+	}
+	post(t, srv.URL+"/v1/auth/request-code", "", map[string]string{"phone": "+1666" + suffix}, &codeResp)
+	var newPhone struct{ Token string }
+	post(t, srv.URL+"/v1/auth/verify", "", map[string]string{"phone": "+1666" + suffix, "code": codeResp.DevCode}, &newPhone)
+	pub2, priv2, _ := ed25519.GenerateKey(rand.Reader)
+	spk2 := randomKey()
+	takeover := map[string]any{"identity_key": randomKey(), "signing_key": []byte(pub2),
+		"signed_prekey": map[string]any{"id": 1, "public_key": spk2, "signature": ed25519.Sign(priv2, spk2)}}
+	if code := do(t, "PUT", srv.URL+"/v1/keys", newPhone.Token, takeover, nil); code != 200 {
+		t.Fatalf("publish from new phone: status %d", code)
+	}
+	if code := get(t, srv.URL+"/v1/me", bob.token, nil); code != http.StatusUnauthorized {
+		t.Fatalf("old phone still signed in: status %d", code)
+	}
+	if code := get(t, srv.URL+"/v1/me", newPhone.Token, nil); code != 200 {
+		t.Fatalf("new phone signed out: status %d", code)
+	}
+
 	// Without a token the socket is refused.
 	if _, resp, err := websocket.DefaultDialer.Dial(wsURL(srv.URL), nil); err == nil || resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated dial: err %v", err)
@@ -145,12 +229,14 @@ func signUp(t *testing.T, base, phone, name string) account {
 
 type frame struct {
 	Type       string
+	Code       string
 	Status     string
 	MessageIDs []int64 `json:"message_ids"`
 	Message    *struct {
 		ID       int64
 		ClientID string `json:"client_id"`
 		Body     string
+		Envelope *string
 	}
 }
 
@@ -166,6 +252,12 @@ func readType(t *testing.T, c *websocket.Conn, typ string) frame {
 			return f
 		}
 	}
+}
+
+func randomKey() []byte {
+	k := make([]byte, 32)
+	rand.Read(k)
+	return k
 }
 
 func wsURL(base string) string { return "ws" + strings.TrimPrefix(base, "http") + "/v1/ws" }

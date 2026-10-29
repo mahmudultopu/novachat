@@ -151,7 +151,7 @@ private fun ConversationRow(c: Conversation, myId: String?, onClick: () -> Unit)
                     Spacer(Modifier.width(4.dp))
                 }
                 Text(
-                    c.lastMessage.body,
+                    if (c.lastMessage.undecryptable) "Couldn't decrypt this message" else c.lastMessage.body,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,

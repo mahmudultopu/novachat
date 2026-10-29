@@ -20,7 +20,9 @@ data class MessageDto(
     @SerialName("client_id") val clientId: String,
     @SerialName("sender_id") val senderId: String,
     @SerialName("recipient_id") val recipientId: String,
-    val body: String,
+    val body: String = "",
+    /** End-to-end encrypted content; the server cannot read it. */
+    val envelope: String? = null,
     @SerialName("created_at") val createdAt: String,
     @SerialName("delivered_at") val deliveredAt: String? = null,
     @SerialName("read_at") val readAt: String? = null,
@@ -71,6 +73,7 @@ data class ChatMessage(
     val deliveredAt: String? = null,
     val readAt: String? = null,
     val failed: Boolean = false,
+    val undecryptable: Boolean = false,
 ) {
     val status: DeliveryStatus
         get() = when {
@@ -92,4 +95,41 @@ data class Session(
     val token: String,
     val user: User,
     val serverUrl: String,
+)
+
+/** What a message says. Encrypted end to end as JSON inside the envelope. */
+@Serializable
+data class MessageContent(val text: String? = null)
+
+@Serializable
+data class SignedPreKeyDto(
+    val id: Int,
+    @SerialName("public_key") val publicKey: String,
+    val signature: String,
+)
+
+@Serializable
+data class OneTimePreKeyDto(
+    val id: Int,
+    @SerialName("public_key") val publicKey: String,
+)
+
+@Serializable
+data class PublishKeysRequest(
+    @SerialName("identity_key") val identityKey: String,
+    @SerialName("signing_key") val signingKey: String,
+    @SerialName("signed_prekey") val signedPreKey: SignedPreKeyDto,
+    @SerialName("one_time_prekeys") val oneTimePreKeys: List<OneTimePreKeyDto> = emptyList(),
+)
+
+@Serializable
+data class PublishKeysResponse(@SerialName("one_time_prekeys") val oneTimePreKeys: Int)
+
+@Serializable
+data class KeyBundleDto(
+    @SerialName("user_id") val userId: String,
+    @SerialName("identity_key") val identityKey: String,
+    @SerialName("signing_key") val signingKey: String,
+    @SerialName("signed_prekey") val signedPreKey: SignedPreKeyDto,
+    @SerialName("one_time_prekey") val oneTimePreKey: OneTimePreKeyDto? = null,
 )

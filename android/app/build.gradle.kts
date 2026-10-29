@@ -16,8 +16,8 @@ android {
         applicationId = "app.novachat"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 3
+        versionName = "0.3.0"
         buildConfigField("String", "DEFAULT_SERVER_URL", "\"$serverUrl\"")
     }
 
@@ -72,5 +72,8 @@ dependencies {
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
     ksp(libs.androidx.room.compiler)
+    implementation(libs.tink.android)
+    testImplementation(libs.junit)
+    testImplementation(libs.kotlin.test.junit)
     debugImplementation(libs.androidx.compose.ui.tooling)
 }
