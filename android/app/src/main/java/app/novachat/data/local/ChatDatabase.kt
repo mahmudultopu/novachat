@@ -21,6 +21,7 @@ import app.novachat.data.ChatMessage
 import app.novachat.data.Group
 import app.novachat.data.GroupMember
 import app.novachat.data.MessageRef
+import app.novachat.data.Status
 import app.novachat.data.NovaJson
 import app.novachat.data.User
 import kotlinx.coroutines.flow.Flow
@@ -136,6 +137,38 @@ data class GroupEntity(
         inviteCode = inviteCode,
         members = runCatching { NovaJson.decodeFromString<List<GroupMember>>(members) }.getOrDefault(emptyList()),
         left = left,
+    )
+}
+
+/** A status update; rows are deleted 24 hours after posting. */
+@Entity(tableName = "statuses", primaryKeys = ["authorId", "id"])
+data class StatusEntity(
+    val authorId: String,
+    val id: String,
+    val text: String,
+    val background: Int?,
+    /** [Attachment] JSON, with its key. */
+    val attachment: String?,
+    val localPath: String?,
+    val createdAtMillis: Long,
+    val expiresAtMillis: Long,
+    val viewed: Boolean,
+    /** Map of viewer ID to when they looked, as JSON (own posts). */
+    val viewers: String?,
+    val sent: Boolean,
+) {
+    fun toStatus() = Status(
+        id = id,
+        authorId = authorId,
+        text = text,
+        background = background,
+        attachment = attachment?.let { runCatching { NovaJson.decodeFromString<Attachment>(it) }.getOrNull() },
+        localPath = localPath,
+        createdAtMillis = createdAtMillis,
+        expiresAtMillis = expiresAtMillis,
+        viewed = viewed,
+        viewers = viewers?.let { runCatching { NovaJson.decodeFromString<Map<String, Long>>(it) }.getOrNull() }.orEmpty(),
+        sent = sent,
     )
 }
 
@@ -344,6 +377,52 @@ abstract class ChatDao {
     @Query("DELETE FROM groups")
     abstract suspend fun deleteGroups()
 
+    @Query("SELECT * FROM statuses ORDER BY createdAtMillis")
+    abstract fun statuses(): Flow<List<StatusEntity>>
+
+    @Query("SELECT * FROM statuses WHERE authorId = :authorId AND id = :id")
+    abstract suspend fun status(authorId: String, id: String): StatusEntity?
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    abstract suspend fun insertStatus(status: StatusEntity)
+
+    @Query("UPDATE statuses SET viewed = 1 WHERE authorId = :authorId AND id = :id")
+    abstract suspend fun markStatusViewed(authorId: String, id: String)
+
+    @Query("UPDATE statuses SET viewers = :viewers WHERE authorId = :authorId AND id = :id")
+    abstract suspend fun setStatusViewers(authorId: String, id: String, viewers: String)
+
+    @Query("UPDATE statuses SET attachment = :attachment WHERE authorId = :authorId AND id = :id")
+    abstract suspend fun setStatusAttachment(authorId: String, id: String, attachment: String)
+
+    @Query("UPDATE statuses SET localPath = :path WHERE authorId = :authorId AND id = :id")
+    abstract suspend fun setStatusLocalPath(authorId: String, id: String, path: String)
+
+    @Query("UPDATE statuses SET sent = 1 WHERE authorId = :authorId AND id = :id")
+    abstract suspend fun markStatusSent(authorId: String, id: String)
+
+    @Query("SELECT * FROM statuses WHERE authorId = :me AND sent = 0 AND expiresAtMillis > :now")
+    abstract suspend fun unsentStatuses(me: String, now: Long): List<StatusEntity>
+
+    @Query("DELETE FROM statuses WHERE authorId = :authorId AND id = :id")
+    abstract suspend fun deleteStatus(authorId: String, id: String)
+
+    @Query("SELECT * FROM statuses WHERE expiresAtMillis <= :now")
+    abstract suspend fun expiredStatuses(now: Long): List<StatusEntity>
+
+    @Query("DELETE FROM statuses WHERE expiresAtMillis <= :now")
+    abstract suspend fun deleteExpiredStatuses(now: Long)
+
+    @Query("DELETE FROM statuses")
+    abstract suspend fun deleteStatuses()
+
+    /** Everyone you have a 1:1 chat with: who sees your status updates. */
+    @Query(
+        """SELECT DISTINCT peerId FROM messages
+           WHERE groupId IS NULL AND control IS NULL AND peerId != :me""",
+    )
+    abstract suspend fun directPeers(me: String): List<String>
+
     @Query("SELECT value FROM meta WHERE `key` = :key")
     abstract suspend fun meta(key: String): String?
 
@@ -395,6 +474,7 @@ abstract class ChatDao {
         deleteSessions()
         deletePreKeys()
         deleteGroups()
+        deleteStatuses()
     }
 }
 
@@ -405,8 +485,8 @@ abstract class ChatDao {
  * so every schema change needs a migration that keeps the data.
  */
 @Database(
-    entities = [MessageEntity::class, UserEntity::class, MetaEntity::class, SessionEntity::class, PreKeyEntity::class, GroupEntity::class],
-    version = 6,
+    entities = [MessageEntity::class, UserEntity::class, MetaEntity::class, SessionEntity::class, PreKeyEntity::class, GroupEntity::class, StatusEntity::class],
+    version = 7,
     exportSchema = false,
 )
 abstract class ChatDatabase : RoomDatabase() {
@@ -468,9 +548,22 @@ abstract class ChatDatabase : RoomDatabase() {
             }
         }
 
+        /** 6 -> 7: status updates. */
+        private val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `statuses` (`authorId` TEXT NOT NULL, `id` TEXT NOT NULL, " +
+                        "`text` TEXT NOT NULL, `background` INTEGER, `attachment` TEXT, `localPath` TEXT, " +
+                        "`createdAtMillis` INTEGER NOT NULL, `expiresAtMillis` INTEGER NOT NULL, " +
+                        "`viewed` INTEGER NOT NULL, `viewers` TEXT, `sent` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`authorId`, `id`))",
+                )
+            }
+        }
+
         fun open(context: Context): ChatDatabase =
             Room.databaseBuilder(context, ChatDatabase::class.java, "novachat.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
                 .build()
     }
 }

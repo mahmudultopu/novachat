@@ -12,6 +12,7 @@ import app.novachat.data.local.ChatDatabase
 import app.novachat.data.local.MessageEntity
 import app.novachat.data.local.GroupEntity
 import app.novachat.data.local.MetaEntity
+import app.novachat.data.local.StatusEntity
 import app.novachat.data.local.UserEntity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -112,6 +113,155 @@ class ChatRepository(
     val people: Flow<Map<String, User>> = dao.users().map { list -> list.associate { it.id to it.toUser() } }
 
     fun group(id: String): Flow<Group?> = dao.group(id).map { it?.toGroup() }
+
+    /** Status updates from the last 24 hours, oldest first. */
+    val statuses: Flow<List<Status>> = dao.statuses().map { list ->
+        val now = System.currentTimeMillis()
+        list.filter { it.expiresAtMillis > now }.map { it.toStatus() }
+    }
+
+    private val _downloadingStatus = MutableStateFlow<Set<String>>(emptySet())
+    val downloadingStatus: StateFlow<Set<String>> = _downloadingStatus
+
+    /** Posts a text status on a coloured background. */
+    fun postTextStatus(text: String, background: Int) {
+        val body = text.trim()
+        if (body.isEmpty()) return
+        postStatus(body, background, null, null)
+    }
+
+    /** Posts a photo or video status, with an optional caption. */
+    fun postMediaStatus(prepared: PreparedMedia, caption: String) {
+        postStatus(caption.trim(), null, prepared.attachment, prepared.file.path)
+    }
+
+    private fun postStatus(text: String, background: Int?, attachment: Attachment?, localPath: String?) {
+        val s = session ?: return
+        val now = System.currentTimeMillis()
+        val status = StatusEntity(
+            authorId = s.user.id,
+            id = UUID.randomUUID().toString(),
+            text = text.take(MAX_STATUS_TEXT),
+            background = background,
+            attachment = attachment?.let { NovaJson.encodeToString(it) },
+            localPath = localPath,
+            createdAtMillis = now,
+            expiresAtMillis = now + STATUS_TTL_MS,
+            viewed = true,
+            viewers = null,
+            sent = false,
+        )
+        scope.launch {
+            dao.insertStatus(status)
+            sendStatus(status)
+        }
+    }
+
+    /**
+     * Sends your status to everyone you chat with one-to-one, encrypted to
+     * each of them like a message. A photo or video goes up once.
+     */
+    private suspend fun sendStatus(status: StatusEntity) {
+        if (!inFlight.add("status:" + status.id)) return
+        try {
+            val s = session ?: return
+            var attachment = status.attachment?.let { NovaJson.decodeFromString<Attachment>(it) }
+            if (attachment != null && attachment.id == null) {
+                val path = status.localPath ?: return
+                val enc = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    AttachmentCipher.encrypt(java.io.File(path).readBytes())
+                }
+                val id = try {
+                    api.uploadAttachment(s, enc.ciphertext)
+                } catch (e: ApiException) {
+                    return // tried again after the next reconnect
+                }
+                attachment = attachment.copy(id = id, key = enc.key.b64(), digest = enc.digest.b64())
+                dao.setStatusAttachment(status.authorId, status.id, NovaJson.encodeToString(attachment))
+            }
+            val post = StatusPost(status.id, status.text.ifEmpty { null }, status.background, attachment)
+            sendHidden(dao.directPeers(s.user.id), MessageContent(status = post))
+            dao.markStatusSent(status.authorId, status.id)
+        } finally {
+            inFlight.remove("status:" + status.id)
+        }
+    }
+
+    /** Marks someone's status as seen and tells them, like a read tick. */
+    fun viewStatus(status: Status) {
+        val me = session?.user?.id ?: return
+        if (status.authorId == me || status.viewed) return
+        scope.launch {
+            dao.markStatusViewed(status.authorId, status.id)
+            sendHidden(listOf(status.authorId), MessageContent(statusSeen = status.id))
+        }
+    }
+
+    /** Deletes your status here and on every phone it went to. */
+    fun deleteStatus(status: Status) {
+        val s = session ?: return
+        if (status.authorId != s.user.id) return
+        scope.launch {
+            dao.deleteStatus(status.authorId, status.id)
+            status.localPath?.let { deleteFile(it) }
+            if (status.sent) sendHidden(dao.directPeers(s.user.id), MessageContent(statusDelete = status.id))
+        }
+    }
+
+    /** Fetches and decrypts a status photo or video. */
+    fun downloadStatus(status: Status) {
+        val s = session ?: return
+        val a = status.attachment ?: return
+        val id = a.id ?: return
+        val key = status.authorId + status.id
+        if (status.localPath != null || a.key == null || a.digest == null || key in _downloadingStatus.value) return
+        _downloadingStatus.update { it + key }
+        scope.launch {
+            try {
+                val plain = AttachmentCipher.decrypt(api.downloadAttachment(s, id), a.key.unb64(), a.digest.unb64())
+                val file = media.newFile(media.extensionFor(a))
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { file.writeBytes(plain) }
+                dao.setStatusLocalPath(status.authorId, status.id, file.path)
+            } catch (e: ApiException) {
+                // Offline: the viewer offers to try again.
+            } catch (e: CryptoException) {
+                // Tampered or corrupt: never show it.
+            } finally {
+                _downloadingStatus.update { it - key }
+            }
+        }
+    }
+
+    /** Queues one hidden, encrypted message per recipient. */
+    private suspend fun sendHidden(recipients: List<String>, content: MessageContent) {
+        val me = session?.user?.id ?: return
+        val json = NovaJson.encodeToString(content)
+        val now = System.currentTimeMillis()
+        val rows = recipients.filter { it != me }.distinct().map { to ->
+            MessageEntity(
+                senderId = me,
+                clientId = UUID.randomUUID().toString(),
+                id = null,
+                recipientId = to,
+                peerId = to,
+                body = "",
+                createdAtMillis = now,
+                deliveredAt = null,
+                readAt = null,
+                failed = false,
+                control = json,
+            )
+        }
+        dao.upsertMessages(rows)
+        rows.forEach { scope.launch { deliver(it) } }
+    }
+
+    /** Drops status updates older than 24 hours, with their files. */
+    private suspend fun cleanUpStatuses() {
+        val now = System.currentTimeMillis()
+        dao.expiredStatuses(now).forEach { st -> st.localPath?.let { deleteFile(it) } }
+        dao.deleteExpiredStatuses(now)
+    }
 
     fun messagesWith(peerId: String): Flow<List<ChatMessage>> =
         dao.messagesWith(peerId).map { list -> list.map { it.toChatMessage() } }
@@ -416,6 +566,7 @@ class ChatRepository(
      * their own, and only within the time limits.
      */
     private suspend fun applyControl(from: String, peer: String, c: MessageContent, sentAtMillis: Long) {
+        if (applyStatusControl(from, c, sentAtMillis)) return
         val ref = c.reaction?.target ?: c.edit?.target ?: c.delete ?: return
         val target = dao.message(ref.senderId, ref.clientId) ?: return
         if (target.peerId != peer || target.deleted) return
@@ -432,6 +583,46 @@ class ChatRepository(
                 removeContent(target.senderId, target.clientId, target.localPath)
             }
         }
+    }
+
+    /** Applies a status post, view or delete. Returns false for other control messages. */
+    private suspend fun applyStatusControl(from: String, c: MessageContent, sentAtMillis: Long): Boolean {
+        val me = session?.user?.id ?: return true
+        c.status?.let { post ->
+            val expires = sentAtMillis + STATUS_TTL_MS
+            if (expires > System.currentTimeMillis()) {
+                dao.insertStatus(
+                    StatusEntity(
+                        authorId = from,
+                        id = post.id.take(64),
+                        text = post.text.orEmpty().take(MAX_STATUS_TEXT),
+                        background = post.background,
+                        attachment = post.attachment?.takeIf {
+                            it.kind == AttachmentKind.image || it.kind == AttachmentKind.video
+                        }?.let { NovaJson.encodeToString(it) },
+                        localPath = null,
+                        createdAtMillis = sentAtMillis,
+                        expiresAtMillis = expires,
+                        viewed = false,
+                        viewers = null,
+                        sent = true,
+                    ),
+                )
+            }
+            return true
+        }
+        c.statusSeen?.let { id ->
+            val row = dao.status(me, id) ?: return true
+            val viewers = row.viewers?.let { runCatching { NovaJson.decodeFromString<Map<String, Long>>(it) }.getOrNull() }.orEmpty()
+            if (from !in viewers) dao.setStatusViewers(me, id, NovaJson.encodeToString(viewers + (from to sentAtMillis)))
+            return true
+        }
+        c.statusDelete?.let { id ->
+            dao.status(from, id)?.localPath?.let { deleteFile(it) }
+            dao.deleteStatus(from, id)
+            return true
+        }
+        return false
     }
 
     /** Fetches and decrypts a received attachment into app storage. */
@@ -847,6 +1038,8 @@ class ChatRepository(
         }
         dao.pending(s.user.id).forEach { deliver(it) }
         dao.pendingGroupRoots(s.user.id).forEach { deliverGroup(it) }
+        dao.unsentStatuses(s.user.id, System.currentTimeMillis()).forEach { sendStatus(it) }
+        cleanUpStatuses()
     }
 
     private suspend fun applyMessages(dtos: List<MessageDto>) {
@@ -1020,5 +1213,7 @@ class ChatRepository(
         /** Phones' clocks drift; be lenient when checking someone else's limits. */
         const val CLOCK_SLACK_MS = 10 * 60_000L
         const val MAX_TEXT = 65_536
+        const val STATUS_TTL_MS = 24 * 3_600_000L
+        const val MAX_STATUS_TEXT = 700
     }
 }

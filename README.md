@@ -285,6 +285,20 @@ description, members, admins, settings and the invite link.
 * Ticks on your group messages turn grey once every member's phone got the
   message, and coloured once everyone has read it.
 
+### Status updates
+
+The **Status** tab shows photo, video and text updates that disappear after
+24 hours. Tap the camera button to post a photo or video (with a caption),
+or the pencil for a text status on a coloured background. Open an update to
+watch it: tap right for the next one, left for the previous one, hold to
+pause. On your own updates, tap 👁 to see who viewed them, or delete them.
+
+* Status updates go to everyone you have a one-to-one chat with, encrypted to
+  each of them like a message (`MessageContent.status`). A photo or video is
+  uploaded once, encrypted, and every copy carries its key.
+* "Seen" and "deleted" travel the same way, so the server never learns who
+  posts what or who watched it. Each phone deletes updates after 24 hours.
+
 ### API
 
 | Method and path | Auth | Purpose |
@@ -376,6 +390,7 @@ Following the builder guide, in order:
    [Reply, react, edit, delete, forward, star](#reply-react-edit-delete-forward-star).
 6. ~~**Groups**~~ (done in 0.7.0): admins, settings and invite links, see
    [Groups](#groups).
-7. **Push notifications** with Firebase Cloud Messaging for offline phones.
-8. **Voice and video calls** (WebRTC + LiveKit + coturn).
-9. A real **SMS provider** for production sign-up, and deployment.
+7. ~~**Status updates**~~ (done in 0.8.0), see [Status updates](#status-updates).
+8. **Push notifications** with Firebase Cloud Messaging for offline phones.
+9. **Voice and video calls** (WebRTC + LiveKit + coturn).
+10. A real **SMS provider** for production sign-up, and deployment.
