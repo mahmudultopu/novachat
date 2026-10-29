@@ -1,5 +1,6 @@
 package app.novachat.ui.home
 
+import app.novachat.data.MessageRef
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Call
@@ -39,6 +40,7 @@ private val tabs = listOf(
 @Composable
 fun HomeScreen(
     openChat: (String) -> Unit,
+    openMessage: (String, MessageRef) -> Unit,
     openProfile: () -> Unit,
     openStarred: () -> Unit,
     openPrivacy: () -> Unit,
@@ -68,7 +70,7 @@ fun HomeScreen(
     ) { padding ->
         val modifier = Modifier.padding(padding)
         when (selected) {
-            0 -> ChatsScreen(openChat = openChat, openNewGroup = openNewGroup, openJoin = openJoin, modifier = modifier)
+            0 -> ChatsScreen(openChat = openChat, openMessage = openMessage, openNewGroup = openNewGroup, openJoin = openJoin, modifier = modifier)
             1 -> StatusScreen(openViewer = openStatus, openTextComposer = openTextStatus, modifier = modifier)
             2 -> CallsScreen(openChat = openChat, modifier = modifier)
             else -> SettingsScreen(openProfile = openProfile, openStarred = openStarred, openPrivacy = openPrivacy, modifier = modifier)

@@ -1,5 +1,8 @@
 package app.novachat.ui.chat
 
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.activity.compose.BackHandler
+import androidx.compose.material.icons.filled.Search
 import app.novachat.data.ApiException
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -107,7 +110,7 @@ import app.novachat.ui.theme.LocalBubbleColors
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChatScreen(peerId: String, onBack: () -> Unit, openInfo: (isGroup: Boolean) -> Unit) {
+fun ChatScreen(peerId: String, onBack: () -> Unit, openInfo: (isGroup: Boolean) -> Unit, focus: MessageRef? = null) {
     val container = appContainer()
     val repo = container.chats
     val messages by remember(peerId) { repo.messagesWith(peerId) }.collectAsStateWithLifecycle(initialValue = emptyList())
@@ -130,9 +133,6 @@ fun ChatScreen(peerId: String, onBack: () -> Unit, openInfo: (isGroup: Boolean) 
     }
 
     val listState = rememberLazyListState()
-    LaunchedEffect(messages.size) {
-        if (messages.isNotEmpty()) listState.animateScrollToItem(0)
-    }
 
     var draft by rememberSaveable { mutableStateOf("") }
     var showSafety by remember { mutableStateOf(false) }
@@ -146,6 +146,43 @@ fun ChatScreen(peerId: String, onBack: () -> Unit, openInfo: (isGroup: Boolean) 
     var replyTo by remember { mutableStateOf<ChatMessage?>(null) }
     var editing by remember { mutableStateOf<ChatMessage?>(null) }
     var highlighted by remember { mutableStateOf<MessageRef?>(null) }
+
+    // Opened from a search result: show that message first, then follow new ones.
+    var focusDone by remember { mutableStateOf(focus == null) }
+    LaunchedEffect(messages.size) {
+        if (messages.isEmpty()) return@LaunchedEffect
+        if (!focusDone) {
+            focusDone = true
+            val index = messages.asReversed().indexOfFirst { it.ref == focus }
+            if (index >= 0) {
+                listState.scrollToItem(index)
+                highlighted = focus
+                delay(2_000)
+                highlighted = null
+                return@LaunchedEffect
+            }
+        }
+        listState.animateScrollToItem(0)
+    }
+
+    // Searching this chat: the newest match first, arrows step through the rest.
+    var searching by remember { mutableStateOf(false) }
+    var query by remember { mutableStateOf("") }
+    var matchIndex by remember { mutableIntStateOf(0) }
+    val matches = remember(messages, query) { searchMatches(messages, query) }
+    LaunchedEffect(query, matchIndex, searching) {
+        val ref = matches.getOrNull(matchIndex)
+        if (!searching || ref == null) return@LaunchedEffect
+        val index = messages.asReversed().indexOfFirst { it.ref == ref }
+        if (index >= 0) listState.animateScrollToItem(index)
+        highlighted = ref
+    }
+    fun closeSearch() {
+        searching = false
+        query = ""
+        highlighted = null
+    }
+    BackHandler(enabled = searching) { closeSearch() }
     val clipboard = LocalClipboardManager.current
     fun nameOf(senderId: String) = when {
         senderId == myId -> "You"
@@ -289,7 +326,20 @@ fun ChatScreen(peerId: String, onBack: () -> Unit, openInfo: (isGroup: Boolean) 
 
     Scaffold(
         topBar = {
-            TopAppBar(
+            if (searching) {
+                TopAppBar(
+                    navigationIcon = { IconButton(onClick = { closeSearch() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Close search") } },
+                    title = { ChatSearchField(query, onQuery = { query = it; matchIndex = 0 }, onSearch = {}) },
+                    actions = {
+                        ChatSearchArrows(
+                            index = matchIndex,
+                            count = matches.size,
+                            onOlder = { matchIndex++ },
+                            onNewer = { matchIndex-- },
+                        )
+                    },
+                )
+            } else TopAppBar(
                 navigationIcon = {
                     IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
                 },
@@ -325,6 +375,7 @@ fun ChatScreen(peerId: String, onBack: () -> Unit, openInfo: (isGroup: Boolean) 
                     }
                 },
                 actions = {
+                    IconButton(onClick = { searching = true }) { Icon(Icons.Filled.Search, "Search") }
                     if (group == null && !blocked) {
                         IconButton(onClick = { startCall(peerId, true) }) {
                             Icon(painterResource(R.drawable.ic_videocam), "Video call")

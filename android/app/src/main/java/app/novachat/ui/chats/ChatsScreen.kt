@@ -21,6 +21,8 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Search
+import app.novachat.data.MessageRef
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -77,7 +79,13 @@ import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChatsScreen(openChat: (String) -> Unit, openNewGroup: () -> Unit, openJoin: () -> Unit, modifier: Modifier = Modifier) {
+fun ChatsScreen(
+    openChat: (String) -> Unit,
+    openMessage: (String, MessageRef) -> Unit,
+    openNewGroup: () -> Unit,
+    openJoin: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     val container = appContainer()
     val conversations by container.chats.conversations.collectAsStateWithLifecycle(initialValue = emptyList())
     val connection by container.chats.connection.collectAsStateWithLifecycle()
@@ -95,6 +103,24 @@ fun ChatsScreen(openChat: (String) -> Unit, openNewGroup: () -> Unit, openJoin: 
     LaunchedEffect(archived.isEmpty()) { if (archived.isEmpty()) showArchived = false }
     BackHandler(enabled = showArchived) { showArchived = false }
 
+    var searching by remember { mutableStateOf(false) }
+    var query by remember { mutableStateOf("") }
+    BackHandler(enabled = searching) { searching = false; query = "" }
+    if (searching) {
+        SearchScreen(
+            query = query,
+            onQuery = { query = it },
+            onClose = { searching = false; query = "" },
+            conversations = conversations,
+            myId = myId,
+            people = people,
+            openChat = openChat,
+            openMessage = openMessage,
+            modifier = modifier,
+        )
+        return
+    }
+
     Scaffold(
         modifier = modifier,
         topBar = {
@@ -103,14 +129,21 @@ fun ChatsScreen(openChat: (String) -> Unit, openNewGroup: () -> Unit, openJoin: 
                     title = { Text("Archived") },
                     navigationIcon = { IconButton(onClick = { showArchived = false }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
                 )
-            } else TopAppBar(title = {
-                Column {
-                    Text("NovaChat", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.primary)
-                    if (connection != ConnectionState.Connected) {
-                        Text("Connecting…", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } else TopAppBar(
+                title = {
+                    Column {
+                        Text("NovaChat", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.primary)
+                        if (connection != ConnectionState.Connected) {
+                            Text("Connecting…", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
                     }
-                }
-            })
+                },
+                actions = {
+                    if (conversations.isNotEmpty()) {
+                        IconButton(onClick = { searching = true }) { Icon(Icons.Filled.Search, "Search") }
+                    }
+                },
+            )
         },
         floatingActionButton = {
             FloatingActionButton(

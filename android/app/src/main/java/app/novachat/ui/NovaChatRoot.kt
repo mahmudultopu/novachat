@@ -28,6 +28,7 @@ import androidx.navigation.navArgument
 import app.novachat.AppContainer
 import app.novachat.NovaChatApp
 import app.novachat.SessionState
+import app.novachat.data.MessageRef
 import app.novachat.ui.auth.AuthFlow
 import app.novachat.ui.auth.ProfileSetupScreen
 import app.novachat.ui.call.CallScreen
@@ -106,6 +107,7 @@ private fun MainNav(inviteLink: String?, onInviteShown: () -> Unit, chatToOpen: 
         composable("home") {
             HomeScreen(
                 openChat = { peerId -> nav.navigate("chat/$peerId") },
+                openMessage = { peerId, ref -> nav.navigate("chat/$peerId?focus=${ref.senderId}:${ref.clientId}") },
                 openProfile = { nav.navigate("profile") },
                 openStarred = { nav.navigate("starred") },
                 openPrivacy = { nav.navigate("privacy") },
@@ -138,10 +140,19 @@ private fun MainNav(inviteLink: String?, onInviteShown: () -> Unit, chatToOpen: 
                 onLeft = { nav.popBackStack() },
             )
         }
-        composable("chat/{peerId}", arguments = listOf(navArgument("peerId") { type = NavType.StringType })) { entry ->
+        composable(
+            "chat/{peerId}?focus={focus}",
+            arguments = listOf(
+                navArgument("peerId") { type = NavType.StringType },
+                navArgument("focus") { type = NavType.StringType; nullable = true; defaultValue = null },
+            ),
+        ) { entry ->
             val peerId = entry.arguments?.getString("peerId").orEmpty()
+            // A search result: "senderId:clientId" of the message to show.
+            val focus = entry.arguments?.getString("focus")?.split(':')?.takeIf { it.size == 2 }?.let { MessageRef(it[0], it[1]) }
             ChatScreen(
                 peerId = peerId,
+                focus = focus,
                 onBack = { nav.popBackStack() },
                 openInfo = { isGroup -> nav.navigate(if (isGroup) "group/$peerId" else "contact/$peerId") },
             )
