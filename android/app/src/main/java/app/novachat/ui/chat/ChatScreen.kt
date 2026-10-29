@@ -107,6 +107,7 @@ import app.novachat.ui.common.StatusTicks
 import app.novachat.ui.common.formatLastSeen
 import app.novachat.ui.common.formatTime
 import app.novachat.ui.theme.LocalBubbleColors
+import app.novachat.ui.theme.wallpaper
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -122,6 +123,8 @@ fun ChatScreen(peerId: String, onBack: () -> Unit, openInfo: (isGroup: Boolean) 
     val presence by remember(peerId) { repo.presence(peerId) }.collectAsStateWithLifecycle(initialValue = null)
     val waitingForKeys by remember(peerId) { repo.waitingForKeys(peerId) }.collectAsStateWithLifecycle(initialValue = false)
     val blocked by remember(peerId) { repo.isBlocked(peerId) }.collectAsStateWithLifecycle(initialValue = false)
+    val chatWallpaper by remember(peerId) { container.appearance.wallpaperFor(peerId) }
+        .collectAsStateWithLifecycle(initialValue = container.appearance.wallpaper.value)
     val session by container.session.collectAsStateWithLifecycle()
     val myId = (session as? SessionState.SignedIn)?.session?.user?.id
 
@@ -399,7 +402,7 @@ fun ChatScreen(peerId: String, onBack: () -> Unit, openInfo: (isGroup: Boolean) 
             LazyColumn(
                 state = listState,
                 reverseLayout = true,
-                modifier = Modifier.weight(1f).fillMaxWidth(),
+                modifier = Modifier.weight(1f).fillMaxWidth().wallpaper(chatWallpaper),
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {

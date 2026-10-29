@@ -44,6 +44,7 @@ fun HomeScreen(
     openProfile: () -> Unit,
     openStarred: () -> Unit,
     openPrivacy: () -> Unit,
+    openAppearance: () -> Unit,
     openNewGroup: () -> Unit,
     openJoin: () -> Unit,
     openStatus: (String) -> Unit,
@@ -73,7 +74,7 @@ fun HomeScreen(
             0 -> ChatsScreen(openChat = openChat, openMessage = openMessage, openNewGroup = openNewGroup, openJoin = openJoin, modifier = modifier)
             1 -> StatusScreen(openViewer = openStatus, openTextComposer = openTextStatus, modifier = modifier)
             2 -> CallsScreen(openChat = openChat, modifier = modifier)
-            else -> SettingsScreen(openProfile = openProfile, openStarred = openStarred, openPrivacy = openPrivacy, modifier = modifier)
+            else -> SettingsScreen(openProfile = openProfile, openStarred = openStarred, openPrivacy = openPrivacy, openAppearance = openAppearance, modifier = modifier)
         }
     }
 }

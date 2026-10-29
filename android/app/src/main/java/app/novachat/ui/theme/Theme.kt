@@ -90,15 +90,34 @@ private val NovaType = Typography(
 )
 
 @Composable
-fun NovaChatTheme(dark: Boolean = isSystemInDarkTheme(), content: @Composable () -> Unit) {
+fun NovaChatTheme(
+    mode: ThemeMode = ThemeMode.System,
+    accent: Accent = Accent.Violet,
+    content: @Composable () -> Unit,
+) {
+    val dark = when (mode) {
+        ThemeMode.System -> isSystemInDarkTheme()
+        ThemeMode.Light -> false
+        ThemeMode.Dark -> true
+    }
     val bubbles = if (dark) {
-        BubbleColors(Color(0xFF4A30E0), Color.White, Color(0xFF241D42), Color(0xFFE7E3F7), Color(0xFF4FE3D0))
+        BubbleColors(accent.night, Color.White, Color(0xFF241D42), Color(0xFFE7E3F7), Color(0xFF4FE3D0))
     } else {
-        BubbleColors(NovaViolet, Color.White, Color.White, NovaInk, Color(0xFF7FF5E6))
+        BubbleColors(accent.main, Color.White, Color.White, NovaInk, Color(0xFF7FF5E6))
+    }
+    val scheme = if (dark) {
+        Dark.copy(
+            primary = accent.pale,
+            onPrimary = accent.deep,
+            primaryContainer = accent.night,
+            onPrimaryContainer = accent.soft,
+        )
+    } else {
+        Light.copy(primary = accent.main, primaryContainer = accent.soft, onPrimaryContainer = accent.deep)
     }
     androidx.compose.runtime.CompositionLocalProvider(LocalBubbleColors provides bubbles) {
         MaterialTheme(
-            colorScheme = if (dark) Dark else Light,
+            colorScheme = scheme,
             typography = NovaType,
             shapes = NovaShapes,
             content = content,

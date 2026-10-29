@@ -10,6 +10,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Lock
@@ -31,10 +33,12 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.novachat.BuildConfig
+import app.novachat.R
 import app.novachat.SessionState
 import app.novachat.ui.appContainer
 import app.novachat.ui.common.Avatar
@@ -42,7 +46,7 @@ import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(openProfile: () -> Unit, openStarred: () -> Unit, openPrivacy: () -> Unit, modifier: Modifier = Modifier) {
+fun SettingsScreen(openProfile: () -> Unit, openStarred: () -> Unit, openPrivacy: () -> Unit, openAppearance: () -> Unit, modifier: Modifier = Modifier) {
     val container = appContainer()
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -50,7 +54,7 @@ fun SettingsScreen(openProfile: () -> Unit, openStarred: () -> Unit, openPrivacy
     val session = (state as? SessionState.SignedIn)?.session ?: return
 
     Scaffold(modifier = modifier, topBar = { TopAppBar(title = { Text("Settings") }) }) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding).padding(16.dp)) {
+        Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(16.dp)) {
             Surface(
                 onClick = openProfile,
                 shape = RoundedCornerShape(20.dp),
@@ -99,6 +103,26 @@ fun SettingsScreen(openProfile: () -> Unit, openStarred: () -> Unit, openPrivacy
                         Text("Privacy", style = MaterialTheme.typography.titleSmall)
                         Text(
                             "Last seen, profile photo, read receipts, blocked contacts",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            Surface(
+                onClick = openAppearance,
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 1.dp,
+            ) {
+                Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(painterResource(R.drawable.ic_palette), null, tint = MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.width(16.dp))
+                    Column {
+                        Text("Theme and wallpaper", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            "Light or dark, app colour, chat wallpaper",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
