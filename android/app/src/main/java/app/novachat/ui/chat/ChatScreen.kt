@@ -1,5 +1,6 @@
 package app.novachat.ui.chat
 
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.offset
@@ -103,11 +104,14 @@ import app.novachat.ui.theme.LocalBubbleColors
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChatScreen(peerId: String, onBack: () -> Unit, openInfo: () -> Unit) {
+fun ChatScreen(peerId: String, onBack: () -> Unit, openInfo: (isGroup: Boolean) -> Unit) {
     val container = appContainer()
     val repo = container.chats
     val messages by remember(peerId) { repo.messagesWith(peerId) }.collectAsStateWithLifecycle(initialValue = emptyList())
     val peer by remember(peerId) { repo.user(peerId) }.collectAsStateWithLifecycle(initialValue = null)
+    // Group chats use the group's ID where a 1:1 chat uses the other person's.
+    val group by remember(peerId) { repo.group(peerId) }.collectAsStateWithLifecycle(initialValue = null)
+    val people by repo.people.collectAsStateWithLifecycle(initialValue = emptyMap())
     val typing by remember(peerId) { repo.isTyping(peerId) }.collectAsStateWithLifecycle(initialValue = false)
     val presence by remember(peerId) { repo.presence(peerId) }.collectAsStateWithLifecycle(initialValue = null)
     val session by container.session.collectAsStateWithLifecycle()
@@ -137,7 +141,11 @@ fun ChatScreen(peerId: String, onBack: () -> Unit, openInfo: () -> Unit) {
     var editing by remember { mutableStateOf<ChatMessage?>(null) }
     var highlighted by remember { mutableStateOf<MessageRef?>(null) }
     val clipboard = LocalClipboardManager.current
-    fun nameOf(senderId: String) = if (senderId == myId) "You" else peer?.displayName ?: "Them"
+    fun nameOf(senderId: String) = when {
+        senderId == myId -> "You"
+        group != null -> personName(senderId, myId, people)
+        else -> peer?.displayName ?: "Them"
+    }
     if (showSafety) {
         SafetyNumberDialog(peerName = peer?.displayName ?: "them", load = { repo.safetyNumber(peerId) }, onDismiss = { showSafety = false })
     }
@@ -272,15 +280,19 @@ fun ChatScreen(peerId: String, onBack: () -> Unit, openInfo: () -> Unit) {
                 },
                 title = {
                     Row(
-                        Modifier.clickable(onClick = openInfo).padding(vertical = 4.dp),
+                        Modifier.clickable { openInfo(group != null) }.padding(vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        val name = peer?.displayName ?: "…"
-                        Avatar(name, peerId, 38.dp, peer?.avatarId)
+                        val g = group
+                        val name = g?.name ?: peer?.displayName ?: "…"
+                        Avatar(name, peerId, 38.dp, g?.avatarId ?: peer?.avatarId)
                         Spacer(Modifier.width(12.dp))
                         Column {
                             Text(name, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             val subtitle = when {
+                                g != null -> g.members
+                                    .sortedBy { it.userId != myId }
+                                    .joinToString(", ") { nameOf(it.userId) }
                                 typing -> "typing…"
                                 else -> formatLastSeen(presence?.online == true, presence?.lastSeenAt ?: peer?.lastSeenAt)
                                     ?: peer?.phone.orEmpty()
@@ -288,6 +300,8 @@ fun ChatScreen(peerId: String, onBack: () -> Unit, openInfo: () -> Unit) {
                             if (subtitle.isNotEmpty()) {
                                 Text(
                                     subtitle,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
                                     style = MaterialTheme.typography.labelSmall,
                                     color = if (typing) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
@@ -315,10 +329,15 @@ fun ChatScreen(peerId: String, onBack: () -> Unit, openInfo: () -> Unit) {
             ) {
                 val shown = messages.asReversed()
                 items(shown, key = { it.senderId + it.clientId }) { m ->
+                    if (m.system) {
+                        SystemNotice(systemText(m, myId, people))
+                        return@items
+                    }
                     val quoted = m.replyTo?.let { byRef[it] }
                     Bubble(
                         m,
                         mine = m.senderId == myId,
+                        sender = if (group != null && m.senderId != myId) nameOf(m.senderId) else null,
                         player = player,
                         quote = m.replyTo?.let { ref ->
                             nameOf(ref.senderId) to (quoted?.let(::previewText) ?: "Message not available")
@@ -343,7 +362,9 @@ fun ChatScreen(peerId: String, onBack: () -> Unit, openInfo: () -> Unit) {
                     )
                 }
                 // reverseLayout: the last item sits above the oldest message.
-                item(key = "e2e-notice") { EncryptionNotice(onClick = { showSafety = true }) }
+                item(key = "e2e-notice") {
+                    EncryptionNotice(onClick = { if (group != null) openInfo(true) else showSafety = true })
+                }
             }
             replyTo?.let { r ->
                 ComposerBanner(nameOf(r.senderId), previewText(r), onClose = { replyTo = null })
@@ -351,50 +372,62 @@ fun ChatScreen(peerId: String, onBack: () -> Unit, openInfo: () -> Unit) {
             editing?.let { e ->
                 ComposerBanner("Editing message", previewText(e), onClose = { editing = null; draft = "" })
             }
-            MessageComposer(
-                text = draft,
-                editing = editing != null,
-                onText = {
-                    draft = it
-                    val now = System.currentTimeMillis()
-                    if (it.isNotBlank() && now - lastTypingSent > 3_000) {
-                        lastTypingSent = now
-                        repo.sendTyping(peerId)
-                    }
-                },
-                onSend = {
-                    val e = editing
-                    if (e != null) {
-                        repo.edit(e, draft)
-                        editing = null
-                    } else {
-                        repo.send(peerId, draft, replyTo?.ref)
-                        replyTo = null
-                    }
-                    draft = ""
-                    lastTypingSent = 0
-                },
-                recordingMs = if (recording) recordMs else null,
-                onAttach = { showAttach = true },
-                onMic = {
-                    val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
-                    if (granted) startRecording() else micPermission.launch(Manifest.permission.RECORD_AUDIO)
-                },
-                onCancelRecording = {
-                    recorder.cancel()
-                    recording = false
-                },
-                onSendRecording = {
-                    recording = false
-                    val result = recorder.stop()
-                    if (result == null) {
-                        toast("Hold on a moment longer to record a voice message")
-                    } else {
-                        repo.sendAttachment(peerId, repo.media.prepareVoice(result.first, result.second), replyTo = replyTo?.ref)
-                        replyTo = null
-                    }
-                },
-            )
+            val g = group
+            if (g != null && !g.canSend(myId)) {
+                Surface(color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        if (g.left || g.member(myId) == null) "You're no longer in this group" else "Only admins can send messages",
+                        textAlign = TextAlign.Center,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(20.dp),
+                    )
+                }
+            } else {
+                MessageComposer(
+                    text = draft,
+                    editing = editing != null,
+                    onText = {
+                        draft = it
+                        val now = System.currentTimeMillis()
+                        if (it.isNotBlank() && now - lastTypingSent > 3_000) {
+                            lastTypingSent = now
+                            if (group == null) repo.sendTyping(peerId)
+                        }
+                    },
+                    onSend = {
+                        val e = editing
+                        if (e != null) {
+                            repo.edit(e, draft)
+                            editing = null
+                        } else {
+                            repo.send(peerId, draft, replyTo?.ref)
+                            replyTo = null
+                        }
+                        draft = ""
+                        lastTypingSent = 0
+                    },
+                    recordingMs = if (recording) recordMs else null,
+                    onAttach = { showAttach = true },
+                    onMic = {
+                        val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+                        if (granted) startRecording() else micPermission.launch(Manifest.permission.RECORD_AUDIO)
+                    },
+                    onCancelRecording = {
+                        recorder.cancel()
+                        recording = false
+                    },
+                    onSendRecording = {
+                        recording = false
+                        val result = recorder.stop()
+                        if (result == null) {
+                            toast("Hold on a moment longer to record a voice message")
+                        } else {
+                            repo.sendAttachment(peerId, repo.media.prepareVoice(result.first, result.second), replyTo = replyTo?.ref)
+                            replyTo = null
+                        }
+                    },
+                )
+            }
         }
     }
 }
@@ -404,6 +437,7 @@ fun ChatScreen(peerId: String, onBack: () -> Unit, openInfo: () -> Unit) {
 private fun Bubble(
     m: ChatMessage,
     mine: Boolean,
+    sender: String?,
     player: VoicePlayer,
     quote: Pair<String, String>?,
     highlighted: Boolean,
@@ -446,6 +480,16 @@ private fun Bubble(
                     )
                     .then(pad),
             ) {
+                if (sender != null) {
+                    Text(
+                        sender,
+                        color = nameColor(m.senderId),
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        modifier = Modifier.padding(horizontal = if (visual) 6.dp else 0.dp).padding(bottom = 2.dp),
+                    )
+                }
                 if (m.forwarded && !m.deleted) {
                     Box(Modifier.padding(horizontal = if (visual) 6.dp else 0.dp)) { ForwardedLabel(fg) }
                 }
@@ -663,3 +707,31 @@ internal fun SafetyNumberDialog(peerName: String, load: suspend () -> String?, o
         confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
     )
 }
+
+/** A group event, such as "Ana added Ben", centred between the messages. */
+@Composable
+private fun SystemNotice(text: String) {
+    Box(Modifier.fillMaxWidth().padding(vertical = 6.dp), contentAlignment = Alignment.Center) {
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.8f),
+            modifier = Modifier.widthIn(max = 320.dp),
+        ) {
+            Text(
+                text,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            )
+        }
+    }
+}
+
+private val senderPalette = listOf(
+    Color(0xFF5B3DF5), Color(0xFF19A99B), Color(0xFFE2577B), Color(0xFFF29B38),
+    Color(0xFF3C8DEB), Color(0xFF9A4DD8), Color(0xFF2FA35A), Color(0xFFD1494A),
+)
+
+/** Each person's name has its own colour in group chats. */
+private fun nameColor(id: String): Color = senderPalette[(id.hashCode() and Int.MAX_VALUE) % senderPalette.size]

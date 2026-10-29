@@ -10,9 +10,13 @@ import (
 	"github.com/mahmudultopu/novachat/server/internal/auth"
 	"github.com/mahmudultopu/novachat/server/internal/chat"
 	"github.com/mahmudultopu/novachat/server/internal/config"
+	"github.com/mahmudultopu/novachat/server/internal/groups"
 	"github.com/mahmudultopu/novachat/server/internal/keys"
 	"github.com/mahmudultopu/novachat/server/internal/media"
 )
+
+// apkURL is where invite pages send people who don't have the app yet.
+const apkURL = "https://github.com/mahmudultopu/novachat/releases/download/latest/novachat.apk"
 
 // NewHandler wires every route. It returns a function that stops the hub.
 func NewHandler(ctx context.Context, cfg config.Config, pool *pgxpool.Pool, rdb *redis.Client) (http.Handler, func()) {
@@ -36,5 +40,6 @@ func NewHandler(ctx context.Context, cfg config.Config, pool *pgxpool.Pool, rdb 
 	(&media.Handlers{Store: mediaStore, Auth: authH}).Register(mux)
 	keysH.Register(mux)
 	chatH.Register(mux)
+	(&groups.Handlers{DB: pool, Hub: hub, Auth: authH, APKURL: apkURL}).Register(mux)
 	return mux, func() { hub.Close() }
 }

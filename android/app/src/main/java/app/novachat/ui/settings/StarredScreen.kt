@@ -48,7 +48,8 @@ fun StarredScreen(onBack: () -> Unit, openChat: (String) -> Unit) {
     val conversations by repo.conversations.collectAsStateWithLifecycle(initialValue = emptyList())
     val session by container.session.collectAsStateWithLifecycle()
     val me = (session as? SessionState.SignedIn)?.session?.user
-    val people = conversations.associate { it.peer.id to it.peer }
+    val chats = conversations.associate { it.peer.id to it.peer }
+    val people by repo.people.collectAsStateWithLifecycle(initialValue = emptyMap())
 
     Scaffold(
         topBar = {
@@ -75,8 +76,8 @@ fun StarredScreen(onBack: () -> Unit, openChat: (String) -> Unit) {
         LazyColumn(Modifier.fillMaxSize().padding(padding)) {
             items(starred, key = { it.senderId + it.clientId }) { m ->
                 val fromMe = m.senderId == me?.id
-                val peer = people[m.peerId]
-                val sender = if (fromMe) me else peer
+                val chat = chats[m.peerId]
+                val sender = if (fromMe) me else people[m.senderId] ?: chat
                 Row(
                     Modifier.fillMaxWidth().clickable { openChat(m.peerId) }.padding(horizontal = 16.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.Top,
@@ -85,7 +86,11 @@ fun StarredScreen(onBack: () -> Unit, openChat: (String) -> Unit) {
                     Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            val title = if (fromMe) "You → ${peer?.displayName ?: "…"}" else peer?.displayName ?: "…"
+                            val title = when {
+                                fromMe -> "You → ${chat?.displayName ?: "…"}"
+                                m.groupId != null -> "${sender?.displayName ?: "…"} · ${chat?.displayName ?: "group"}"
+                                else -> chat?.displayName ?: "…"
+                            }
                             Text(
                                 title,
                                 style = MaterialTheme.typography.titleSmall,

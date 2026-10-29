@@ -47,7 +47,20 @@ import app.novachat.data.ApiException
 import app.novachat.data.ConnectionState
 import app.novachat.data.Conversation
 import app.novachat.ui.appContainer
+import app.novachat.ui.chat.personName
 import app.novachat.ui.chat.previewText
+import app.novachat.ui.chat.systemText
+import app.novachat.R
+import app.novachat.data.User
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.painter.Painter
+import androidx.compose.ui.graphics.vector.rememberVectorPainter
+import androidx.compose.ui.res.painterResource
 import app.novachat.ui.common.Avatar
 import app.novachat.ui.common.StatusTicks
 import app.novachat.ui.common.formatListTime
@@ -55,13 +68,15 @@ import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChatsScreen(openChat: (String) -> Unit, modifier: Modifier = Modifier) {
+fun ChatsScreen(openChat: (String) -> Unit, openNewGroup: () -> Unit, openJoin: () -> Unit, modifier: Modifier = Modifier) {
     val container = appContainer()
     val conversations by container.chats.conversations.collectAsStateWithLifecycle(initialValue = emptyList())
     val connection by container.chats.connection.collectAsStateWithLifecycle()
     val session by container.session.collectAsStateWithLifecycle()
     val myId = (session as? SessionState.SignedIn)?.session?.user?.id
+    val people by container.chats.people.collectAsStateWithLifecycle(initialValue = emptyMap())
     var newChat by remember { mutableStateOf(false) }
+    var showMenu by remember { mutableStateOf(false) }
 
     Scaffold(
         modifier = modifier,
@@ -77,7 +92,7 @@ fun ChatsScreen(openChat: (String) -> Unit, modifier: Modifier = Modifier) {
         },
         floatingActionButton = {
             FloatingActionButton(
-                onClick = { newChat = true },
+                onClick = { showMenu = true },
                 containerColor = MaterialTheme.colorScheme.primary,
                 contentColor = MaterialTheme.colorScheme.onPrimary,
                 shape = RoundedCornerShape(20.dp),
@@ -93,7 +108,7 @@ fun ChatsScreen(openChat: (String) -> Unit, modifier: Modifier = Modifier) {
                 Text("No chats yet", style = MaterialTheme.typography.titleMedium)
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "Tap + and enter a friend's phone number to start chatting.",
+                    "Tap + to message a friend by phone number, or to start a group.",
                     textAlign = TextAlign.Center,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -101,7 +116,26 @@ fun ChatsScreen(openChat: (String) -> Unit, modifier: Modifier = Modifier) {
         } else {
             LazyColumn(Modifier.fillMaxSize().padding(padding)) {
                 items(conversations, key = { it.peer.id }) { c ->
-                    ConversationRow(c, myId) { openChat(c.peer.id) }
+                    ConversationRow(c, myId, people) { openChat(c.peer.id) }
+                }
+            }
+        }
+    }
+
+    if (showMenu) {
+        ModalBottomSheet(onDismissRequest = { showMenu = false }) {
+            Column(Modifier.padding(bottom = 24.dp)) {
+                MenuRow(rememberVectorPainter(Icons.Filled.Person), "New chat", "Message someone by phone number") {
+                    showMenu = false
+                    newChat = true
+                }
+                MenuRow(painterResource(R.drawable.ic_group), "New group", "Chat with several people at once") {
+                    showMenu = false
+                    openNewGroup()
+                }
+                MenuRow(painterResource(R.drawable.ic_link), "Join a group", "Paste an invite link") {
+                    showMenu = false
+                    openJoin()
                 }
             }
         }
@@ -116,7 +150,25 @@ fun ChatsScreen(openChat: (String) -> Unit, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun ConversationRow(c: Conversation, myId: String?, onClick: () -> Unit) {
+private fun MenuRow(icon: Painter, title: String, subtitle: String, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 24.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier.size(44.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primaryContainer),
+            contentAlignment = Alignment.Center,
+        ) { Icon(icon, null, tint = MaterialTheme.colorScheme.primary) }
+        Spacer(Modifier.width(16.dp))
+        Column {
+            Text(title, style = MaterialTheme.typography.titleMedium)
+            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+@Composable
+private fun ConversationRow(c: Conversation, myId: String?, people: Map<String, User>, onClick: () -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -143,7 +195,7 @@ private fun ConversationRow(c: Conversation, myId: String?, onClick: () -> Unit)
             }
             Spacer(Modifier.height(2.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
-                if (c.lastMessage.senderId == myId) {
+                if (c.lastMessage.senderId == myId && !c.lastMessage.system) {
                     StatusTicks(
                         c.lastMessage.status,
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -152,7 +204,12 @@ private fun ConversationRow(c: Conversation, myId: String?, onClick: () -> Unit)
                     Spacer(Modifier.width(4.dp))
                 }
                 Text(
-                    if (c.lastMessage.undecryptable) "Couldn't decrypt this message" else previewText(c.lastMessage),
+                    when {
+                        c.lastMessage.system -> systemText(c.lastMessage, myId, people)
+                        c.group != null && c.lastMessage.senderId != myId ->
+                            personName(c.lastMessage.senderId, myId, people) + ": " + previewText(c.lastMessage)
+                        else -> previewText(c.lastMessage)
+                    },
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,

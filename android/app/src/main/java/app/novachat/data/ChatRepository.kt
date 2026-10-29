@@ -10,6 +10,7 @@ import app.novachat.crypto.b64
 import app.novachat.crypto.unb64
 import app.novachat.data.local.ChatDatabase
 import app.novachat.data.local.MessageEntity
+import app.novachat.data.local.GroupEntity
 import app.novachat.data.local.MetaEntity
 import app.novachat.data.local.UserEntity
 import kotlinx.coroutines.CoroutineScope
@@ -89,16 +90,25 @@ class ChatRepository(
         dao.lastMessages(),
         myId.flatMapUnread(),
         dao.users(),
-    ) { last, unread, people ->
+        dao.groups(),
+    ) { last, unread, people, groupRows ->
         val names = people.associateBy { it.id }
+        val groups = groupRows.associate { it.id to it.toGroup() }
         last.map { m ->
+            val group = groups[m.peerId]
             Conversation(
-                peer = names[m.peerId]?.toUser() ?: User(id = m.peerId, phone = "…"),
+                peer = group?.asUser() ?: names[m.peerId]?.toUser() ?: User(id = m.peerId, phone = "…"),
                 lastMessage = m.toChatMessage(),
                 unread = unread[m.peerId] ?: 0,
+                group = group,
             )
         }.sortedByDescending { it.lastMessage.id ?: Long.MAX_VALUE }
     }
+
+    /** Everyone this phone knows, by user ID. */
+    val people: Flow<Map<String, User>> = dao.users().map { list -> list.associate { it.id to it.toUser() } }
+
+    fun group(id: String): Flow<Group?> = dao.group(id).map { it?.toGroup() }
 
     fun messagesWith(peerId: String): Flow<List<ChatMessage>> =
         dao.messagesWith(peerId).map { list -> list.map { it.toChatMessage() } }
@@ -212,10 +222,7 @@ class ChatRepository(
             failed = false,
             replyTo = replyTo?.let { NovaJson.encodeToString(it) },
         )
-        scope.launch {
-            dao.upsertMessages(listOf(msg))
-            deliver(msg)
-        }
+        scope.launch { queue(msg) }
     }
 
     /** Sends a photo, video, voice note or document, with an optional caption. */
@@ -236,7 +243,19 @@ class ChatRepository(
             localPath = prepared.file.path,
             replyTo = replyTo?.let { NovaJson.encodeToString(it) },
         )
-        scope.launch {
+        scope.launch { queue(msg) }
+    }
+
+    /**
+     * Saves a new outgoing message and sends it. In a group it is saved once
+     * for the chat and then copied, encrypted, for each member.
+     */
+    private suspend fun queue(msg: MessageEntity) {
+        if (dao.groupNow(msg.peerId) != null) {
+            val root = msg.copy(groupId = msg.peerId)
+            dao.upsertMessages(listOf(root))
+            deliverGroup(root)
+        } else {
             dao.upsertMessages(listOf(msg))
             deliver(msg)
         }
@@ -322,8 +341,7 @@ class ChatRepository(
                     localPath = path,
                     forwarded = true,
                 )
-                dao.upsertMessages(listOf(msg))
-                scope.launch { deliver(msg) }
+                scope.launch { queue(msg) }
             }
         }
     }
@@ -339,6 +357,10 @@ class ChatRepository(
     /** Queues a hidden control message (reaction, edit, delete) for [peerId]. */
     private suspend fun sendControl(peerId: String, content: MessageContent) {
         val s = session ?: return
+        if (dao.groupNow(peerId) != null) {
+            fanOut(peerId, content.copy(groupId = peerId), parent = null)
+            return
+        }
         val msg = MessageEntity(
             senderId = s.user.id,
             clientId = UUID.randomUUID().toString(),
@@ -425,7 +447,7 @@ class ChatRepository(
         scope.launch {
             val msg = dao.message(me, clientId) ?: return@launch
             dao.setFailed(me, clientId, false)
-            deliver(msg)
+            if (msg.groupId != null && msg.control == null) deliverGroup(msg) else deliver(msg)
         }
     }
 
@@ -437,9 +459,15 @@ class ChatRepository(
     fun setOpenChat(peerId: String?) {
         openPeer = peerId
         if (peerId != null) {
-            scope.launch { markRead(peerId) }
-            queryPresence(peerId)
-            refreshProfile(peerId)
+            scope.launch {
+                markRead(peerId)
+                if (dao.groupNow(peerId) == null) {
+                    queryPresence(peerId)
+                    refreshProfile(peerId)
+                } else {
+                    refreshGroup(peerId)
+                }
+            }
         }
     }
 
@@ -462,7 +490,7 @@ class ChatRepository(
         val me = session?.user?.id ?: return
         val unread = dao.unreadIds(peerId, me)
         if (unread.isNotEmpty() && sendReceipt("read", unread)) {
-            dao.markRead(unread, OffsetDateTime.now().toString())
+            dao.markReadHere(me, unread, OffsetDateTime.now().toString())
         }
     }
 
@@ -487,9 +515,9 @@ class ChatRepository(
         var envelope = msg.envelope
         var identityKey = msg.envelopeKey
         if (envelope == null || identityKey == null) {
-            if (!cipher.hasSession(msg.peerId)) {
+            if (!cipher.hasSession(msg.recipientId)) {
                 val bundle = try {
-                    api.keyBundle(s, msg.peerId)
+                    api.keyBundle(s, msg.recipientId)
                 } catch (e: ApiException) {
                     // 404: they have not opened an encrypting version of NovaChat yet.
                     if (e.status != 0) dao.setFailed(msg.senderId, msg.clientId, true)
@@ -497,7 +525,7 @@ class ChatRepository(
                 }
                 try {
                     cryptoLock.withLock {
-                        if (!cipher.hasSession(msg.peerId)) cipher.startSession(msg.peerId, bundle.toPreKeyBundle())
+                        if (!cipher.hasSession(msg.recipientId)) cipher.startSession(msg.recipientId, bundle.toPreKeyBundle())
                     }
                 } catch (e: CryptoException) {
                     // A bad signature on their prekey: never send to keys we cannot trust.
@@ -517,8 +545,8 @@ class ChatRepository(
                             ),
                         )
                     ).toByteArray()
-                    envelope = NovaJson.encodeToString(cipher.encrypt(msg.peerId, content))
-                    identityKey = cipher.remoteIdentity(msg.peerId)?.b64()
+                    envelope = NovaJson.encodeToString(cipher.encrypt(msg.recipientId, content))
+                    identityKey = cipher.remoteIdentity(msg.recipientId)?.b64()
                     dao.setEnvelope(msg.senderId, msg.clientId, envelope, identityKey)
                 }
             } catch (e: CryptoException) {
@@ -535,6 +563,159 @@ class ChatRepository(
                 put("identity_key", identityKey)
             }.toString(),
         )
+    }
+
+    /**
+     * Sends a group message typed on this phone: uploads its file once, then
+     * makes one hidden copy per member, each encrypted over that member's own
+     * session. The message's ticks are rolled up from the copies.
+     */
+    private suspend fun deliverGroup(root: MessageEntity) {
+        if (!inFlight.add(root.clientId)) return
+        try {
+            val s = session ?: return
+            val groupId = root.groupId ?: return
+            val group = dao.groupNow(groupId)?.toGroup() ?: return
+            if (!group.canSend(s.user.id)) {
+                dao.setFailed(root.senderId, root.clientId, true)
+                return
+            }
+            if (dao.copyCount(s.user.id, root.clientId) > 0) return
+            val attachment = if (root.attachment != null) uploadIfNeeded(s, root) ?: return else null
+            val content = MessageContent(
+                text = root.body.ifEmpty { null },
+                attachment = attachment,
+                replyTo = root.replyTo?.let { NovaJson.decodeFromString<MessageRef>(it) },
+                forwarded = root.forwarded,
+                groupId = groupId,
+                groupMessageId = root.clientId,
+            )
+            fanOut(groupId, content, parent = root.clientId)
+        } finally {
+            inFlight.remove(root.clientId)
+        }
+    }
+
+    /** Queues one hidden, individually encrypted copy of [content] per group member. */
+    private suspend fun fanOut(groupId: String, content: MessageContent, parent: String?) {
+        val s = session ?: return
+        val me = s.user.id
+        val group = dao.groupNow(groupId)?.toGroup() ?: return
+        val json = NovaJson.encodeToString(content)
+        val now = System.currentTimeMillis()
+        val copies = group.members.map { it.userId }.filter { it != me }.map { member ->
+            MessageEntity(
+                senderId = me,
+                clientId = UUID.randomUUID().toString(),
+                id = null,
+                recipientId = member,
+                peerId = groupId,
+                body = "",
+                createdAtMillis = now,
+                deliveredAt = null,
+                readAt = null,
+                failed = false,
+                control = json,
+                groupId = groupId,
+                parentClientId = parent,
+            )
+        }
+        val saved = db.withTransaction {
+            if (parent != null && dao.copyCount(me, parent) > 0) return@withTransaction false
+            dao.upsertMessages(copies)
+            // Alone in the group: nothing to send, so the message counts as sent.
+            if (parent != null && copies.isEmpty()) dao.setIdIfMissing(me, parent, dao.lastSeq() ?: 0L)
+            true
+        }
+        if (saved) copies.forEach { scope.launch { deliver(it) } }
+    }
+
+    suspend fun createGroup(name: String, memberIds: List<String>): String {
+        val s = session ?: throw ApiException(0, "signed_out", "Not signed in")
+        val g = api.createGroup(s, name.trim(), memberIds)
+        saveGroup(g)
+        return g.id
+    }
+
+    /** Fetches a group; if you are no longer in it, the chat stays read-only. */
+    fun refreshGroup(id: String) {
+        val s = session ?: return
+        scope.launch {
+            try {
+                saveGroup(api.group(s, id))
+            } catch (e: ApiException) {
+                if (e.status == 404) dao.markLeft(id)
+            }
+        }
+    }
+
+    private suspend fun refreshGroups(s: Session) {
+        val all = api.groups(s)
+        all.forEach { saveGroup(it) }
+        val current = all.map { it.id }.toSet()
+        dao.activeGroupIds().filter { it !in current }.forEach { dao.markLeft(it) }
+    }
+
+    private suspend fun saveGroup(g: GroupDto) {
+        g.members.forEach { dao.upsertUser(it.user.toEntity()) }
+        dao.upsertGroup(
+            GroupEntity(
+                id = g.id,
+                name = g.name,
+                description = g.description,
+                avatarId = g.avatarId,
+                onlyAdminsSend = g.onlyAdminsSend,
+                onlyAdminsEdit = g.onlyAdminsEdit,
+                inviteCode = g.inviteCode,
+                members = NovaJson.encodeToString(g.members.map { GroupMember(it.user.id, it.role) }),
+                left = false,
+            ),
+        )
+    }
+
+    /** Runs a group change on the server and stores the group as it is afterwards. */
+    suspend fun changeGroup(action: suspend ApiClient.(Session) -> GroupDto) {
+        val s = session ?: throw ApiException(0, "signed_out", "Not signed in")
+        saveGroup(api.action(s))
+    }
+
+    suspend fun leaveGroup(id: String) {
+        val s = session ?: throw ApiException(0, "signed_out", "Not signed in")
+        api.leaveGroup(s, id)
+        dao.markLeft(id)
+    }
+
+    suspend fun previewInvite(code: String): InvitePreview {
+        val s = session ?: throw ApiException(0, "signed_out", "Not signed in")
+        return api.previewInvite(s, code)
+    }
+
+    suspend fun joinInvite(code: String): String {
+        val s = session ?: throw ApiException(0, "signed_out", "Not signed in")
+        val g = api.joinInvite(s, code)
+        saveGroup(g)
+        return g.id
+    }
+
+    /**
+     * Keeps the stored member list in step with an event as it arrives, so a
+     * message from someone just added is accepted even before the group is
+     * fetched again.
+     */
+    private suspend fun applyGroupEvent(groupId: String, e: GroupEvent, me: String) {
+        val row = dao.groupNow(groupId) ?: return
+        var members = row.toGroup().members
+        when (e.event) {
+            "added" -> members = members + e.targets.filter { t -> members.none { it.userId == t } }.map { GroupMember(it, "member") }
+            "joined" -> if (members.none { it.userId == e.actor }) members = members + GroupMember(e.actor, "member")
+            "removed" -> members = members.filter { it.userId !in e.targets }
+            "left" -> members = members.filter { it.userId != e.actor }
+            "promoted" -> members = members.map { if (it.userId in e.targets) it.copy(role = "admin") else it }
+            "demoted" -> members = members.map { if (it.userId in e.targets) it.copy(role = "member") else it }
+            else -> return
+        }
+        dao.setMembers(groupId, NovaJson.encodeToString(members))
+        if (members.none { it.userId == me }) dao.markLeft(groupId)
     }
 
     /**
@@ -609,7 +790,7 @@ class ChatRepository(
         if (code == "stale_identity" && msg.envelope != null) {
             // They reinstalled or moved to a new phone: start a fresh session
             // with their new keys and encrypt the message again.
-            cryptoLock.withLock { keys.forgetSessions(msg.peerId) }
+            cryptoLock.withLock { keys.forgetSessions(msg.recipientId) }
             dao.setEnvelope(me, clientId, null, null)
             scope.launch { deliver(msg.copy(envelope = null, envelopeKey = null)) }
         } else {
@@ -630,6 +811,7 @@ class ChatRepository(
             // Keys go up on the next reconnect; receiving still works meanwhile.
         }
         try {
+            refreshGroups(s)
             while (true) {
                 val page = api.sync(s, dao.lastSeq() ?: 0L, SYNC_PAGE)
                 applyMessages(page)
@@ -640,15 +822,18 @@ class ChatRepository(
             return
         }
         dao.pending(s.user.id).forEach { deliver(it) }
+        dao.pendingGroupRoots(s.user.id).forEach { deliverGroup(it) }
     }
 
     private suspend fun applyMessages(dtos: List<MessageDto>) {
         val s = session ?: return
         val me = s.user.id
         if (dtos.isEmpty()) return
+        val changedGroups = mutableSetOf<String>()
         writeLock.withLock {
-            for (dto in dtos) store(dto, me)
+            for (dto in dtos) store(dto, me)?.let { changedGroups += it }
         }
+        changedGroups.forEach { refreshGroup(it) }
 
         // Tell senders their messages reached this phone, and mark the open chat read.
         sendReceipt("delivered", dtos.filter { it.recipientId == me && it.senderId != me && it.deliveredAt == null }.map { it.id })
@@ -666,23 +851,37 @@ class ChatRepository(
      * and the message are saved in one transaction, so a crash cannot lose a
      * message whose key was already used up.
      */
-    private suspend fun store(dto: MessageDto, me: String) {
-        if (dao.message(dto.senderId, dto.clientId) != null) {
+    private suspend fun store(dto: MessageDto, me: String): String? {
+        val existing = dao.message(dto.senderId, dto.clientId)
+        if (existing != null) {
             dao.applyServerCopy(dto.senderId, dto.clientId, dto.id, dto.deliveredAt, dto.readAt)
-            return
+            // The first member's copy getting through marks the group message sent.
+            existing.parentClientId?.let { dao.setIdIfMissing(me, it, dto.id) }
+            return null
         }
+        // Group messages are stored under their shared ID, so look for the server ID too.
+        if (dto.senderId != me && dao.hasId(dto.id)) return null
         val peer = if (dto.senderId == me) dto.recipientId else dto.senderId
         val base = dto.toEntity(peer)
+        val groupId = dto.groupId
+        if (groupId != null && dto.envelope == null) {
+            // A group event written by the server: "Ana added Ben".
+            if (dto.recipientId != me) return null
+            dao.insertMessage(base.copy(peerId = groupId, recipientId = groupId, groupId = groupId, system = true))
+            runCatching { NovaJson.decodeFromString<GroupEvent>(dto.body) }.getOrNull()?.let { applyGroupEvent(groupId, it, me) }
+            return groupId
+        }
         val envelope = dto.envelope
         if (envelope == null) {
             dao.insertMessage(base) // sent before encryption existed
-            return
+            return null
         }
         if (dto.senderId == me) {
             // Our own message from an earlier install: its keys are gone.
             dao.insertMessage(base.copy(body = "", undecryptable = true))
-            return
+            return null
         }
+        var refresh: String? = null
         cryptoLock.withLock {
             db.withTransaction {
                 val content = try {
@@ -695,8 +894,35 @@ class ChatRepository(
                 } catch (e: IllegalArgumentException) {
                     null
                 }
+                val gid = content?.groupId
+                val group = gid?.let { dao.groupNow(it)?.toGroup() }
+                if (gid != null && group == null) refresh = gid
                 when {
                     content == null -> dao.insertMessage(base.copy(body = "", undecryptable = true))
+                    gid != null -> {
+                        val allowed = group == null || (
+                            !group.left && group.member(dto.senderId) != null &&
+                                (content.isControl || !group.onlyAdminsSend || group.isAdmin(dto.senderId))
+                            )
+                        val inGroup = base.copy(peerId = gid, recipientId = gid, groupId = gid)
+                        when {
+                            // Not (or no longer) allowed to post here: keep a hidden row so it is not fetched again.
+                            !allowed -> dao.insertMessage(inGroup.copy(body = "", control = "{}"))
+                            content.isControl -> {
+                                dao.insertMessage(inGroup.copy(body = "", control = NovaJson.encodeToString(content)))
+                                applyControl(dto.senderId, gid, content, base.createdAtMillis)
+                            }
+                            else -> dao.insertMessage(
+                                inGroup.copy(
+                                    clientId = content.groupMessageId ?: dto.clientId,
+                                    body = content.text.orEmpty().take(MAX_TEXT),
+                                    attachment = content.attachment?.let { NovaJson.encodeToString(it) },
+                                    replyTo = content.replyTo?.let { NovaJson.encodeToString(it) },
+                                    forwarded = content.forwarded,
+                                ),
+                            )
+                        }
+                    }
                     content.isControl -> {
                         dao.insertMessage(base.copy(body = "", control = NovaJson.encodeToString(content)))
                         applyControl(dto.senderId, peer, content, base.createdAtMillis)
@@ -712,12 +938,17 @@ class ChatRepository(
                 }
             }
         }
+        return refresh
     }
 
     private suspend fun applyReceipt(frame: ServerFrame) {
+        val me = session?.user?.id ?: return
         if (frame.messageIds.isEmpty()) return
         val at = frame.at ?: OffsetDateTime.now().toString()
-        if (frame.status == "read") dao.markRead(frame.messageIds, at) else dao.markDelivered(frame.messageIds, at)
+        writeLock.withLock {
+            if (frame.status == "read") dao.markRead(me, frame.messageIds, at) else dao.markDelivered(me, frame.messageIds, at)
+            dao.parentsOf(frame.messageIds).forEach { dao.rollUpReceipts(me, it, at) }
+        }
     }
 
     private fun MessageDto.toEntity(peer: String) = MessageEntity(

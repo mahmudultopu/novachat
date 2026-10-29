@@ -44,7 +44,13 @@ private val tabs = listOf(
 
 /** NovaChat's home: bottom navigation instead of top tabs. */
 @Composable
-fun HomeScreen(openChat: (String) -> Unit, openProfile: () -> Unit, openStarred: () -> Unit) {
+fun HomeScreen(
+    openChat: (String) -> Unit,
+    openProfile: () -> Unit,
+    openStarred: () -> Unit,
+    openNewGroup: () -> Unit,
+    openJoin: () -> Unit,
+) {
     var selected by rememberSaveable { mutableIntStateOf(0) }
     Scaffold(
         bottomBar = {
@@ -66,7 +72,7 @@ fun HomeScreen(openChat: (String) -> Unit, openProfile: () -> Unit, openStarred:
     ) { padding ->
         val modifier = Modifier.padding(padding)
         when (selected) {
-            0 -> ChatsScreen(openChat = openChat, modifier = modifier)
+            0 -> ChatsScreen(openChat = openChat, openNewGroup = openNewGroup, openJoin = openJoin, modifier = modifier)
             1 -> ComingSoon("Status", "Share photo, video and text updates that disappear after 24 hours.", modifier)
             2 -> ComingSoon("Calls", "End-to-end encrypted voice and video calls are next on the roadmap.", modifier)
             else -> SettingsScreen(openProfile = openProfile, openStarred = openStarred, modifier = modifier)

@@ -18,6 +18,8 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import app.novachat.data.Attachment
 import app.novachat.data.ChatMessage
+import app.novachat.data.Group
+import app.novachat.data.GroupMember
 import app.novachat.data.MessageRef
 import app.novachat.data.NovaJson
 import app.novachat.data.User
@@ -68,6 +70,11 @@ data class MessageEntity(
      * position stays right, but never shown as a bubble.
      */
     val control: String? = null,
+    /** Group chats: the group. [peerId] is the group's ID too. */
+    val groupId: String? = null,
+    /** Hidden per-member copy of the group message with this client ID. */
+    val parentClientId: String? = null,
+    @ColumnInfo(defaultValue = "0") val system: Boolean = false,
 ) {
     fun toChatMessage() = ChatMessage(
         clientId = clientId,
@@ -89,6 +96,8 @@ data class MessageEntity(
         editedAtMillis = editedAtMillis,
         deleted = deleted,
         starred = starred,
+        groupId = groupId,
+        system = system,
     )
 }
 
@@ -102,6 +111,32 @@ data class UserEntity(
     val lastSeenAt: String? = null,
 ) {
     fun toUser() = User(id = id, phone = phone, name = name, about = about, avatarId = avatarId, lastSeenAt = lastSeenAt)
+}
+
+@Entity(tableName = "groups")
+data class GroupEntity(
+    @PrimaryKey val id: String,
+    val name: String,
+    val description: String,
+    val avatarId: String?,
+    val onlyAdminsSend: Boolean,
+    val onlyAdminsEdit: Boolean,
+    val inviteCode: String?,
+    /** [GroupMember] list as JSON. */
+    val members: String,
+    val left: Boolean,
+) {
+    fun toGroup() = Group(
+        id = id,
+        name = name,
+        description = description,
+        avatarId = avatarId,
+        onlyAdminsSend = onlyAdminsSend,
+        onlyAdminsEdit = onlyAdminsEdit,
+        inviteCode = inviteCode,
+        members = runCatching { NovaJson.decodeFromString<List<GroupMember>>(members) }.getOrDefault(emptyList()),
+        left = left,
+    )
 }
 
 /** Small settings that belong to the signed-in account, such as its user ID. */
@@ -146,7 +181,7 @@ abstract class ChatDao {
 
     @Query(
         """SELECT peerId, COUNT(*) AS unread FROM messages
-           WHERE senderId != :me AND readAt IS NULL AND control IS NULL GROUP BY peerId""",
+           WHERE senderId != :me AND readAt IS NULL AND control IS NULL AND system = 0 GROUP BY peerId""",
     )
     abstract fun unreadCounts(me: String): Flow<List<UnreadCount>>
 
@@ -159,8 +194,44 @@ abstract class ChatDao {
     )
     abstract suspend fun unreadIds(peerId: String, me: String): List<Long>
 
-    @Query("SELECT * FROM messages WHERE senderId = :me AND id IS NULL AND failed = 0 ORDER BY createdAtMillis")
+    /** Messages (and hidden copies) waiting to go out, except group messages not yet copied per member. */
+    @Query(
+        """SELECT * FROM messages WHERE senderId = :me AND id IS NULL AND failed = 0
+           AND NOT (groupId IS NOT NULL AND control IS NULL) ORDER BY createdAtMillis""",
+    )
     abstract suspend fun pending(me: String): List<MessageEntity>
+
+    /** Group messages typed here that have not been copied for each member yet. */
+    @Query(
+        """SELECT * FROM messages AS m WHERE senderId = :me AND id IS NULL AND failed = 0
+           AND groupId IS NOT NULL AND control IS NULL AND system = 0
+           AND NOT EXISTS (SELECT 1 FROM messages AS f WHERE f.senderId = :me AND f.parentClientId = m.clientId)
+           ORDER BY createdAtMillis""",
+    )
+    abstract suspend fun pendingGroupRoots(me: String): List<MessageEntity>
+
+    @Query("SELECT COUNT(*) FROM messages WHERE senderId = :me AND parentClientId = :parent")
+    abstract suspend fun copyCount(me: String, parent: String): Int
+
+    @Query("SELECT EXISTS (SELECT 1 FROM messages WHERE id = :id)")
+    abstract suspend fun hasId(id: Long): Boolean
+
+    @Query("UPDATE messages SET id = :id WHERE senderId = :me AND clientId = :clientId AND id IS NULL")
+    abstract suspend fun setIdIfMissing(me: String, clientId: String, id: Long)
+
+    @Query("SELECT DISTINCT parentClientId FROM messages WHERE id IN (:ids) AND parentClientId IS NOT NULL")
+    abstract suspend fun parentsOf(ids: List<Long>): List<String>
+
+    /** A group message is delivered (read) once every member's copy is. */
+    @Query(
+        """UPDATE messages SET
+             deliveredAt = CASE WHEN NOT EXISTS (SELECT 1 FROM messages AS f WHERE f.senderId = :me
+               AND f.parentClientId = :parent AND f.deliveredAt IS NULL) THEN COALESCE(deliveredAt, :at) ELSE deliveredAt END,
+             readAt = CASE WHEN NOT EXISTS (SELECT 1 FROM messages AS f WHERE f.senderId = :me
+               AND f.parentClientId = :parent AND f.readAt IS NULL) THEN COALESCE(readAt, :at) ELSE readAt END
+           WHERE senderId = :me AND clientId = :parent""",
+    )
+    abstract suspend fun rollUpReceipts(me: String, parent: String, at: String)
 
     @Query("SELECT MAX(id) FROM messages")
     abstract suspend fun lastSeq(): Long?
@@ -217,11 +288,25 @@ abstract class ChatDao {
     @Query("UPDATE messages SET failed = :failed WHERE senderId = :senderId AND clientId = :clientId")
     abstract suspend fun setFailed(senderId: String, clientId: String, failed: Boolean)
 
-    @Query("UPDATE messages SET deliveredAt = COALESCE(deliveredAt, :at) WHERE id IN (:ids)")
-    abstract suspend fun markDelivered(ids: List<Long>, at: String)
+    /** Receipts for messages we sent. A group message's own row is rolled up from its copies instead. */
+    @Query(
+        """UPDATE messages SET deliveredAt = COALESCE(deliveredAt, :at)
+           WHERE id IN (:ids) AND senderId = :me AND NOT (groupId IS NOT NULL AND control IS NULL)""",
+    )
+    abstract suspend fun markDelivered(me: String, ids: List<Long>, at: String)
 
-    @Query("UPDATE messages SET deliveredAt = COALESCE(deliveredAt, :at), readAt = COALESCE(readAt, :at) WHERE id IN (:ids)")
-    abstract suspend fun markRead(ids: List<Long>, at: String)
+    @Query(
+        """UPDATE messages SET deliveredAt = COALESCE(deliveredAt, :at), readAt = COALESCE(readAt, :at)
+           WHERE id IN (:ids) AND senderId = :me AND NOT (groupId IS NOT NULL AND control IS NULL)""",
+    )
+    abstract suspend fun markRead(me: String, ids: List<Long>, at: String)
+
+    /** We read these incoming messages on this phone. */
+    @Query(
+        """UPDATE messages SET deliveredAt = COALESCE(deliveredAt, :at), readAt = COALESCE(readAt, :at)
+           WHERE id IN (:ids) AND senderId != :me""",
+    )
+    abstract suspend fun markReadHere(me: String, ids: List<Long>, at: String)
 
     @Query("SELECT * FROM users")
     abstract fun users(): Flow<List<UserEntity>>
@@ -234,6 +319,30 @@ abstract class ChatDao {
 
     @Upsert
     abstract suspend fun upsertUser(user: UserEntity)
+
+    @Query("SELECT * FROM groups")
+    abstract fun groups(): Flow<List<GroupEntity>>
+
+    @Query("SELECT * FROM groups WHERE id = :id")
+    abstract fun group(id: String): Flow<GroupEntity?>
+
+    @Query("SELECT * FROM groups WHERE id = :id")
+    abstract suspend fun groupNow(id: String): GroupEntity?
+
+    @Query("SELECT id FROM groups WHERE `left` = 0")
+    abstract suspend fun activeGroupIds(): List<String>
+
+    @Upsert
+    abstract suspend fun upsertGroup(group: GroupEntity)
+
+    @Query("UPDATE groups SET `left` = 1, inviteCode = NULL WHERE id = :id")
+    abstract suspend fun markLeft(id: String)
+
+    @Query("UPDATE groups SET members = :members WHERE id = :id")
+    abstract suspend fun setMembers(id: String, members: String)
+
+    @Query("DELETE FROM groups")
+    abstract suspend fun deleteGroups()
 
     @Query("SELECT value FROM meta WHERE `key` = :key")
     abstract suspend fun meta(key: String): String?
@@ -285,6 +394,7 @@ abstract class ChatDao {
         deleteMeta()
         deleteSessions()
         deletePreKeys()
+        deleteGroups()
     }
 }
 
@@ -295,8 +405,8 @@ abstract class ChatDao {
  * so every schema change needs a migration that keeps the data.
  */
 @Database(
-    entities = [MessageEntity::class, UserEntity::class, MetaEntity::class, SessionEntity::class, PreKeyEntity::class],
-    version = 5,
+    entities = [MessageEntity::class, UserEntity::class, MetaEntity::class, SessionEntity::class, PreKeyEntity::class, GroupEntity::class],
+    version = 6,
     exportSchema = false,
 )
 abstract class ChatDatabase : RoomDatabase() {
@@ -343,9 +453,24 @@ abstract class ChatDatabase : RoomDatabase() {
             }
         }
 
+        /** 5 -> 6: groups. */
+        private val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `messages` ADD COLUMN `groupId` TEXT")
+                db.execSQL("ALTER TABLE `messages` ADD COLUMN `parentClientId` TEXT")
+                db.execSQL("ALTER TABLE `messages` ADD COLUMN `system` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `groups` (`id` TEXT NOT NULL, `name` TEXT NOT NULL, " +
+                        "`description` TEXT NOT NULL, `avatarId` TEXT, `onlyAdminsSend` INTEGER NOT NULL, " +
+                        "`onlyAdminsEdit` INTEGER NOT NULL, `inviteCode` TEXT, `members` TEXT NOT NULL, " +
+                        "`left` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+                )
+            }
+        }
+
         fun open(context: Context): ChatDatabase =
             Room.databaseBuilder(context, ChatDatabase::class.java, "novachat.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                 .build()
     }
 }
