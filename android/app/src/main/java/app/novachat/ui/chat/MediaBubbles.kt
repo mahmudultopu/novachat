@@ -291,6 +291,8 @@ fun formatSize(bytes: Long): String = when {
 
 /** One line describing a message for the chat list. */
 fun previewText(m: ChatMessage): String {
+    if (m.deleted) return "This message was deleted"
+    if (m.undecryptable) return "Couldn't decrypt this message"
     val a = m.attachment ?: return m.body
     val label = when (a.kind) {
         AttachmentKind.image -> "Photo"

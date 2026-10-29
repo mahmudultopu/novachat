@@ -241,6 +241,25 @@ see the other person's photo, about and the encryption check.
   Profile photos, unlike messages, are not end-to-end encrypted, the same as
   on most messengers.
 
+### Reply, react, edit, delete, forward, star
+
+Long-press any message for the quick reactions and the actions: **Reply**,
+**Copy text**, **Forward** (to one or more chats), **Star**, **Edit** (your
+own text messages, for 15 minutes) and **Delete** (for you, or for everyone
+within 48 hours). Starred messages from every chat are in Settings →
+Starred messages.
+
+* Reactions, edits and deletes are small hidden messages that travel end to
+  end encrypted like any other (`MessageContent.reaction`, `.edit`,
+  `.delete`), so the server never learns who reacted with what or what a
+  message was changed to. The receiving phone checks that only the author
+  edits or deletes a message, and only within the time limits.
+* A reply carries a pointer to the original (`reply_to`), never a copy of it;
+  tap the quote to jump to the original message.
+* Forwarding a photo, video or document does not upload it again: the copy
+  points at the same encrypted file and carries the same key.
+* Stars and "delete for me" stay on your phone.
+
 ### API
 
 | Method and path | Auth | Purpose |
@@ -318,6 +337,9 @@ Following the builder guide, in order:
    see [Photos, videos, voice notes and documents](#photos-videos-voice-notes-and-documents).
 4. ~~**Profiles and presence**~~ (done in 0.5.0): profile photo, about, last
    seen and online, see [Profiles, last seen and online](#profiles-last-seen-and-online).
-5. **Push notifications** with Firebase Cloud Messaging for offline phones.
-6. **Groups**, then **voice and video calls** (WebRTC + LiveKit + coturn).
-7. A real **SMS provider** for production sign-up, and deployment.
+5. ~~**Message actions**~~ (done in 0.6.0): reply, react, edit, delete for
+   everyone, forward, star and copy, see
+   [Reply, react, edit, delete, forward, star](#reply-react-edit-delete-forward-star).
+6. **Push notifications** with Firebase Cloud Messaging for offline phones.
+7. **Groups**, then **voice and video calls** (WebRTC + LiveKit + coturn).
+8. A real **SMS provider** for production sign-up, and deployment.

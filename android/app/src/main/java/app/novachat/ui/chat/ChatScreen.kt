@@ -1,5 +1,14 @@
 package app.novachat.ui.chat
 
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.offset
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
+import app.novachat.data.MessageRef
 import android.Manifest
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -117,6 +126,18 @@ fun ChatScreen(peerId: String, onBack: () -> Unit, openInfo: () -> Unit) {
 
     var draft by rememberSaveable { mutableStateOf("") }
     var showSafety by remember { mutableStateOf(false) }
+
+    // Replies, reactions, edits, deletes and forwards.
+    val conversations by repo.conversations.collectAsStateWithLifecycle(initialValue = emptyList())
+    val byRef = remember(messages) { messages.associateBy { it.ref } }
+    var actionsFor by remember { mutableStateOf<ChatMessage?>(null) }
+    var deleteFor by remember { mutableStateOf<ChatMessage?>(null) }
+    var forwardFor by remember { mutableStateOf<ChatMessage?>(null) }
+    var replyTo by remember { mutableStateOf<ChatMessage?>(null) }
+    var editing by remember { mutableStateOf<ChatMessage?>(null) }
+    var highlighted by remember { mutableStateOf<MessageRef?>(null) }
+    val clipboard = LocalClipboardManager.current
+    fun nameOf(senderId: String) = if (senderId == myId) "You" else peer?.displayName ?: "Them"
     if (showSafety) {
         SafetyNumberDialog(peerName = peer?.displayName ?: "them", load = { repo.safetyNumber(peerId) }, onDismiss = { showSafety = false })
     }
@@ -147,7 +168,8 @@ fun ChatScreen(peerId: String, onBack: () -> Unit, openInfo: () -> Unit) {
     fun sendPrepared(prepare: suspend () -> PreparedMedia) {
         scope.launch {
             try {
-                repo.sendAttachment(peerId, prepare())
+                repo.sendAttachment(peerId, prepare(), replyTo = replyTo?.ref)
+                replyTo = null
             } catch (e: MediaException) {
                 toast(e.message ?: "Couldn't send that file")
             }
@@ -174,6 +196,47 @@ fun ChatScreen(peerId: String, onBack: () -> Unit, openInfo: () -> Unit) {
     }
     val micPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) startRecording() else toast("NovaChat needs the microphone to record voice messages")
+    }
+
+    actionsFor?.let { m ->
+        val close = { actionsFor = null }
+        MessageActionsSheet(
+            m = m,
+            myReaction = myId?.let { m.reactions[it] },
+            canReact = !m.deleted && !m.undecryptable && m.id != null,
+            canEdit = repo.canEdit(m, myId),
+            onDismiss = close,
+            onReact = { repo.react(m, it); close() },
+            onReply = { replyTo = m; editing = null; close() },
+            onCopy = {
+                clipboard.setText(AnnotatedString(m.body))
+                toast("Copied")
+                close()
+            },
+            onForward = { forwardFor = m; close() },
+            onStar = { repo.setStarred(m, !m.starred); close() },
+            onEdit = { editing = m; replyTo = null; draft = m.body; close() },
+            onDelete = { deleteFor = m; close() },
+        )
+    }
+    deleteFor?.let { m ->
+        DeleteMessageDialog(
+            canDeleteForEveryone = repo.canDeleteForEveryone(m, myId),
+            onEveryone = { repo.deleteForEveryone(m); deleteFor = null },
+            onMe = { repo.deleteForMe(m); deleteFor = null },
+            onDismiss = { deleteFor = null },
+        )
+    }
+    forwardFor?.let { m ->
+        ForwardSheet(
+            conversations = conversations,
+            onSend = { peers ->
+                repo.forward(m, peers)
+                forwardFor = null
+                toast(if (peers.size > 1) "Forwarded to ${peers.size} chats" else "Forwarded")
+            },
+            onDismiss = { forwardFor = null },
+        )
     }
 
     if (showAttach) {
@@ -250,14 +313,47 @@ fun ChatScreen(peerId: String, onBack: () -> Unit, openInfo: () -> Unit) {
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                items(messages.asReversed(), key = { it.senderId + it.clientId }) { m ->
-                    Bubble(m, mine = m.senderId == myId, player = player, onRetry = { repo.retry(m.clientId) })
+                val shown = messages.asReversed()
+                items(shown, key = { it.senderId + it.clientId }) { m ->
+                    val quoted = m.replyTo?.let { byRef[it] }
+                    Bubble(
+                        m,
+                        mine = m.senderId == myId,
+                        player = player,
+                        quote = m.replyTo?.let { ref ->
+                            nameOf(ref.senderId) to (quoted?.let(::previewText) ?: "Message not available")
+                        },
+                        highlighted = m.ref == highlighted,
+                        onRetry = { repo.retry(m.clientId) },
+                        onLongPress = { actionsFor = m },
+                        onQuoteClick = {
+                            val index = shown.indexOfFirst { it.ref == m.replyTo }
+                            if (index >= 0) {
+                                scope.launch {
+                                    listState.animateScrollToItem(index)
+                                    highlighted = m.replyTo
+                                    delay(1_500)
+                                    highlighted = null
+                                }
+                            }
+                        },
+                        onReactionsClick = {
+                            if (myId != null && myId in m.reactions) repo.react(m, "") else actionsFor = m
+                        },
+                    )
                 }
                 // reverseLayout: the last item sits above the oldest message.
                 item(key = "e2e-notice") { EncryptionNotice(onClick = { showSafety = true }) }
             }
+            replyTo?.let { r ->
+                ComposerBanner(nameOf(r.senderId), previewText(r), onClose = { replyTo = null })
+            }
+            editing?.let { e ->
+                ComposerBanner("Editing message", previewText(e), onClose = { editing = null; draft = "" })
+            }
             MessageComposer(
                 text = draft,
+                editing = editing != null,
                 onText = {
                     draft = it
                     val now = System.currentTimeMillis()
@@ -267,7 +363,14 @@ fun ChatScreen(peerId: String, onBack: () -> Unit, openInfo: () -> Unit) {
                     }
                 },
                 onSend = {
-                    repo.send(peerId, draft)
+                    val e = editing
+                    if (e != null) {
+                        repo.edit(e, draft)
+                        editing = null
+                    } else {
+                        repo.send(peerId, draft, replyTo?.ref)
+                        replyTo = null
+                    }
                     draft = ""
                     lastTypingSent = 0
                 },
@@ -287,7 +390,8 @@ fun ChatScreen(peerId: String, onBack: () -> Unit, openInfo: () -> Unit) {
                     if (result == null) {
                         toast("Hold on a moment longer to record a voice message")
                     } else {
-                        repo.sendAttachment(peerId, repo.media.prepareVoice(result.first, result.second))
+                        repo.sendAttachment(peerId, repo.media.prepareVoice(result.first, result.second), replyTo = replyTo?.ref)
+                        replyTo = null
                     }
                 },
             )
@@ -295,8 +399,19 @@ fun ChatScreen(peerId: String, onBack: () -> Unit, openInfo: () -> Unit) {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun Bubble(m: ChatMessage, mine: Boolean, player: VoicePlayer, onRetry: () -> Unit) {
+private fun Bubble(
+    m: ChatMessage,
+    mine: Boolean,
+    player: VoicePlayer,
+    quote: Pair<String, String>?,
+    highlighted: Boolean,
+    onRetry: () -> Unit,
+    onLongPress: () -> Unit,
+    onQuoteClick: () -> Unit,
+    onReactionsClick: () -> Unit,
+) {
     val colors = LocalBubbleColors.current
     // Rounded "pill" bubbles with one tighter corner pointing at the sender.
     val shape = if (mine) {
@@ -304,26 +419,49 @@ private fun Bubble(m: ChatMessage, mine: Boolean, player: VoicePlayer, onRetry: 
     } else {
         RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp, bottomStart = 6.dp, bottomEnd = 20.dp)
     }
-    val bg = if (mine) colors.mine else colors.theirs
+    val bg = (if (mine) colors.mine else colors.theirs).let {
+        if (highlighted) lerp(it, MaterialTheme.colorScheme.secondary, 0.35f) else it
+    }
     val fg = if (mine) colors.onMine else colors.onTheirs
-    Box(Modifier.fillMaxWidth(), contentAlignment = if (mine) Alignment.CenterEnd else Alignment.CenterStart) {
+    Column(Modifier.fillMaxWidth(), horizontalAlignment = if (mine) Alignment.End else Alignment.Start) {
         Surface(
             color = bg,
             shape = shape,
             shadowElevation = if (mine) 0.dp else 1.dp,
-            modifier = Modifier
-                .widthIn(max = 300.dp)
-                .then(if (m.status == DeliveryStatus.Failed) Modifier.clickable(onClick = onRetry) else Modifier),
+            modifier = Modifier.widthIn(max = 300.dp),
         ) {
-            val attachment = m.attachment.takeUnless { m.undecryptable }
+            val attachment = m.attachment.takeUnless { m.undecryptable || m.deleted }
             val visual = attachment != null && (attachment.kind == AttachmentKind.image || attachment.kind == AttachmentKind.video)
             val pad = if (visual) {
                 Modifier.padding(start = 5.dp, end = 5.dp, top = 5.dp, bottom = 6.dp)
             } else {
                 Modifier.padding(start = 14.dp, end = 12.dp, top = 8.dp, bottom = 6.dp)
             }
-            Column(pad) {
-                if (m.undecryptable) {
+            // Inside the Surface, so the press ripple follows the bubble's shape.
+            Column(
+                Modifier
+                    .combinedClickable(
+                        onClick = { if (m.status == DeliveryStatus.Failed) onRetry() },
+                        onLongClick = onLongPress,
+                    )
+                    .then(pad),
+            ) {
+                if (m.forwarded && !m.deleted) {
+                    Box(Modifier.padding(horizontal = if (visual) 6.dp else 0.dp)) { ForwardedLabel(fg) }
+                }
+                if (quote != null && !m.deleted) {
+                    ReplyQuote(
+                        quote.first,
+                        quote.second,
+                        accent = if (mine) fg else MaterialTheme.colorScheme.primary,
+                        fg = fg,
+                        modifier = Modifier.widthIn(min = 140.dp).padding(bottom = 6.dp),
+                        onClick = onQuoteClick,
+                    )
+                }
+                if (m.deleted) {
+                    DeletedText(mine, fg)
+                } else if (m.undecryptable) {
                     Text(
                         "This message couldn't be decrypted on this phone",
                         color = fg.copy(alpha = 0.75f),
@@ -346,6 +484,13 @@ private fun Bubble(m: ChatMessage, mine: Boolean, player: VoicePlayer, onRetry: 
                     if (m.status == DeliveryStatus.Failed) {
                         Text("Not sent · tap to retry  ", style = MaterialTheme.typography.labelSmall, color = fg.copy(alpha = 0.8f))
                     }
+                    if (m.starred) {
+                        Icon(Icons.Filled.Star, "Starred", Modifier.size(12.dp), tint = fg.copy(alpha = 0.7f))
+                        Spacer(Modifier.width(4.dp))
+                    }
+                    if (m.editedAtMillis != null && !m.deleted) {
+                        Text("edited  ", style = MaterialTheme.typography.labelSmall, color = fg.copy(alpha = 0.7f), fontStyle = FontStyle.Italic)
+                    }
                     Text(formatTime(m.createdAtMillis), style = MaterialTheme.typography.labelSmall, color = fg.copy(alpha = 0.7f))
                     if (mine) {
                         Spacer(Modifier.width(4.dp))
@@ -354,12 +499,16 @@ private fun Bubble(m: ChatMessage, mine: Boolean, player: VoicePlayer, onRetry: 
                 }
             }
         }
+        if (m.reactions.isNotEmpty() && !m.deleted) {
+            Box(Modifier.offset(y = (-6).dp)) { ReactionsPill(m.reactions, mine, onReactionsClick) }
+        }
     }
 }
 
 @Composable
 private fun MessageComposer(
     text: String,
+    editing: Boolean,
     onText: (String) -> Unit,
     onSend: () -> Unit,
     recordingMs: Long?,
@@ -390,8 +539,12 @@ private fun MessageComposer(
                 }
             } else {
                 Row(verticalAlignment = Alignment.Bottom) {
-                    IconButton(onClick = onAttach, modifier = Modifier.padding(bottom = 2.dp)) {
-                        Icon(painterResource(R.drawable.ic_attach), "Attach", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (!editing) {
+                        IconButton(onClick = onAttach, modifier = Modifier.padding(bottom = 2.dp)) {
+                            Icon(painterResource(R.drawable.ic_attach), "Attach", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    } else {
+                        Spacer(Modifier.width(8.dp))
                     }
                     TextField(
                         value = text,
@@ -412,12 +565,20 @@ private fun MessageComposer(
         Spacer(Modifier.width(8.dp))
         val sendNow = recordingMs != null || text.isNotBlank()
         FilledIconButton(
-            onClick = { if (recordingMs != null) onSendRecording() else if (text.isNotBlank()) onSend() else onMic() },
+            onClick = {
+                when {
+                    recordingMs != null -> onSendRecording()
+                    text.isNotBlank() -> onSend()
+                    !editing -> onMic()
+                }
+            },
             shape = CircleShape,
             colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.primary),
             modifier = Modifier.size(52.dp),
         ) {
-            if (sendNow) {
+            if (editing) {
+                Icon(Icons.Filled.Check, "Save edit")
+            } else if (sendNow) {
                 Icon(Icons.AutoMirrored.Filled.Send, "Send")
             } else {
                 Icon(painterResource(R.drawable.ic_mic), "Record voice message")

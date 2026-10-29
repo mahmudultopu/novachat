@@ -23,6 +23,7 @@ import app.novachat.ui.chat.ChatScreen
 import app.novachat.ui.chat.ContactInfoScreen
 import app.novachat.ui.home.HomeScreen
 import app.novachat.ui.settings.ProfileScreen
+import app.novachat.ui.settings.StarredScreen
 
 @Composable
 fun appContainer(): AppContainer = (LocalContext.current.applicationContext as NovaChatApp).container
@@ -49,6 +50,7 @@ private fun MainNav() {
             HomeScreen(
                 openChat = { peerId -> nav.navigate("chat/$peerId") },
                 openProfile = { nav.navigate("profile") },
+                openStarred = { nav.navigate("starred") },
             )
         }
         composable("chat/{peerId}", arguments = listOf(navArgument("peerId") { type = NavType.StringType })) { entry ->
@@ -61,6 +63,9 @@ private fun MainNav() {
         }
         composable("contact/{peerId}", arguments = listOf(navArgument("peerId") { type = NavType.StringType })) { entry ->
             ContactInfoScreen(peerId = entry.arguments?.getString("peerId").orEmpty(), onBack = { nav.popBackStack() })
+        }
+        composable("starred") {
+            StarredScreen(onBack = { nav.popBackStack() }, openChat = { peerId -> nav.navigate("chat/$peerId") })
         }
         composable("profile") {
             ProfileScreen(onBack = { nav.popBackStack() })
