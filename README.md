@@ -62,7 +62,7 @@ Settings come from environment variables:
 | Variable | Default |
 | --- | --- |
 | `NOVACHAT_ENV` | `dev` (`prod` turns off the fixed code; an SMS provider is then required) |
-| `NOVACHAT_HTTP_ADDR` | `:8080` |
+| `NOVACHAT_HTTP_ADDR` | `:8080` (or `:$PORT` when `PORT` is set) |
 | `NOVACHAT_DATABASE_URL` | `postgres://novachat:novachat@localhost:5432/novachat?sslmode=disable` |
 | `NOVACHAT_REDIS_URL` | `redis://localhost:6379/0` |
 | `NOVACHAT_DEV_OTP` | `123456` |
@@ -110,6 +110,30 @@ phone can't connect.
 
 Each pull request's CI run also builds a debug APK you can download from the
 run's **Artifacts** section and install on any Android phone.
+
+## 4. Put the server online
+
+`render.yaml` deploys the server, Postgres and Redis to
+[Render](https://render.com) on the free plan, in the Singapore region, so a
+phone can chat from anywhere.
+
+1. Sign up at <https://dashboard.render.com/register> with **GitHub**.
+2. In the dashboard click **New > Blueprint**, connect GitHub, and pick the
+   `novachat` repository.
+3. Click **Deploy Blueprint**. The first build takes about five minutes.
+4. Open the **novachat** web service and copy its address, such as
+   `https://novachat-abcd.onrender.com`. Opening
+   `https://<address>/healthz` in a browser should show `ok`.
+5. In the app, tap the gear icon on the sign-in screen and enter that address,
+   or set `novachat.serverUrl` in `android/gradle.properties` so new builds
+   use it by default.
+
+The online server runs in **dev mode** like the local one: no SMS is sent and
+every number accepts `123456`, so treat it as a test server. Free-plan limits
+to know about: the server sleeps after 15 minutes without traffic and takes
+about a minute to wake up, the free database expires after 30 days, and the
+free Redis keeps nothing on restart (only sign-in codes live there). Upgrade
+the plans in Render when you need it always on.
 
 ## How it works
 
