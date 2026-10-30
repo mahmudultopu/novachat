@@ -46,7 +46,7 @@ import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(openProfile: () -> Unit, openStarred: () -> Unit, openPrivacy: () -> Unit, openAppearance: () -> Unit, modifier: Modifier = Modifier) {
+fun SettingsScreen(openProfile: () -> Unit, openStarred: () -> Unit, openPrivacy: () -> Unit, openAppearance: () -> Unit, openBackup: () -> Unit, modifier: Modifier = Modifier) {
     val container = appContainer()
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -123,6 +123,26 @@ fun SettingsScreen(openProfile: () -> Unit, openStarred: () -> Unit, openPrivacy
                         Text("Theme and wallpaper", style = MaterialTheme.typography.titleSmall)
                         Text(
                             "Light or dark, app colour, chat wallpaper",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            Surface(
+                onClick = openBackup,
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 1.dp,
+            ) {
+                Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(painterResource(R.drawable.ic_backup), null, tint = MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.width(16.dp))
+                    Column {
+                        Text("Chat backup", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            "Save chats to a password-locked file, or restore them",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )

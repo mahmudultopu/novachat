@@ -449,6 +449,20 @@ changed it. In a group, only people who may edit the group info can change it.
   `challenge` that is valid for 10 minutes. The app sends it with the PIN to
   `POST /v1/auth/verify-pin`.
 
+### Chat backup
+
+* **Settings → Chat backup → Back up now** saves your chats to a file you
+  pick: Google Drive, a memory card, your computer. You choose a password
+  first; without it nobody can open the file, NovaChat included.
+* On a new phone, sign in with the same number, then **Restore from file**.
+  Messages already on the phone are kept; messages it couldn't decrypt (sent
+  before you switched phones) are filled in from the backup.
+* The file is `NOVABAK1`, a random salt and IV, then the gzipped JSON sealed
+  with AES-256-GCM. The key comes from the password through PBKDF2-SHA256
+  (150,000 rounds). Encryption keys and media files are not in it; photos and
+  videos keep their keys, so they download again while the server has them.
+* A backup only restores into the account that made it.
+
 ### API
 
 | Method and path | Auth | Purpose |
@@ -564,6 +578,6 @@ Following the builder guide, in order:
     [Theme and wallpaper](#theme-and-wallpaper)), ~~contacts~~ (done in
     0.16.0, see [Contacts](#contacts)).
 12. **Account safety**: ~~two-step verification~~ (done in 0.18.0, see
-    [Two-step verification](#two-step-verification)); chat backup and linked
-    devices next.
+    [Two-step verification](#two-step-verification)), ~~chat backup~~ (done
+    in 0.19.0, see [Chat backup](#chat-backup)); linked devices next.
 13. A real **SMS provider** for production sign-up, and deployment.
