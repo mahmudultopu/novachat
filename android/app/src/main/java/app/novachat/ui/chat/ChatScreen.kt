@@ -249,6 +249,10 @@ fun ChatScreen(peerId: String, onBack: () -> Unit, openInfo: (isGroup: Boolean) 
         takePicture.launch(uri)
     }
     // NovaChat holds the camera permission for video calls, so Android asks for it here too.
+    var sharingLocation by remember { mutableStateOf(false) }
+    val locationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
+        if (result.values.any { it }) sharingLocation = true else toast("NovaChat needs location access to share where you are")
+    }
     val cameraPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) openCamera() else toast("NovaChat needs the camera to take photos")
     }
@@ -305,6 +309,17 @@ fun ChatScreen(peerId: String, onBack: () -> Unit, openInfo: (isGroup: Boolean) 
         )
     }
 
+    if (sharingLocation) {
+        SendLocationDialog(
+            onDismiss = { sharingLocation = false },
+            onSend = { place ->
+                sharingLocation = false
+                repo.sendLocation(peerId, place, replyTo = replyTo?.ref)
+                replyTo = null
+            },
+        )
+    }
+
     if (showAttach) {
         ModalBottomSheet(onDismissRequest = { showAttach = false }) {
             Row(
@@ -323,6 +338,17 @@ fun ChatScreen(peerId: String, onBack: () -> Unit, openInfo: (isGroup: Boolean) 
                 AttachOption(R.drawable.ic_document, "Document", Color(0xFFF29B38)) {
                     showAttach = false
                     openDocument.launch(arrayOf("*/*"))
+                }
+                AttachOption(R.drawable.ic_location, "Location", Color(0xFF2FA36B)) {
+                    showAttach = false
+                    val granted = listOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION).any {
+                        ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+                    }
+                    if (granted) {
+                        sharingLocation = true
+                    } else {
+                        locationPermission.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+                    }
                 }
             }
         }
@@ -578,6 +604,7 @@ private fun Bubble(
             modifier = Modifier.widthIn(max = 300.dp).then(if (sheen != null) Modifier.background(sheen, shape) else Modifier),
         ) {
             val attachment = m.attachment.takeUnless { m.undecryptable || m.deleted }
+            val place = m.location.takeUnless { m.undecryptable || m.deleted }
             val visual = attachment != null && (attachment.kind == AttachmentKind.image || attachment.kind == AttachmentKind.video)
             val pad = if (visual) {
                 Modifier.padding(start = 5.dp, end = 5.dp, top = 5.dp, bottom = 6.dp)
@@ -625,6 +652,8 @@ private fun Bubble(
                         style = MaterialTheme.typography.bodyLarge,
                         fontStyle = FontStyle.Italic,
                     )
+                } else if (place != null) {
+                    LocationCard(place, fg)
                 } else if (attachment != null) {
                     AttachmentView(m, attachment, fg, player)
                     if (m.body.isNotEmpty()) {
