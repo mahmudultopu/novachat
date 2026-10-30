@@ -122,6 +122,9 @@ data class ChatMessage(
     val location: SharedLocation? = null,
     /** A shared contact card. */
     val contact: SharedContact? = null,
+    /** A poll, and who picked which options (by user ID, option indexes). */
+    val poll: Poll? = null,
+    val votes: Map<String, List<Int>> = emptyMap(),
 ) {
     val ref: MessageRef get() = MessageRef(senderId, clientId)
 
@@ -279,6 +282,9 @@ data class MessageContent(
     val location: SharedLocation? = null,
     /** A contact card: someone's name and phone numbers. */
     val contact: SharedContact? = null,
+    /** A poll, and a vote in one: the voter's whole choice, replacing any earlier vote. */
+    val poll: Poll? = null,
+    val vote: PollVote? = null,
     /** Disappearing messages: this message vanishes this many seconds after it was sent. */
     @SerialName("expire_s") val expireSec: Int? = null,
     /** "I set disappearing messages to this many seconds" (0 is off), shown as a line in the chat. */
@@ -286,7 +292,7 @@ data class MessageContent(
 ) {
     val isControl: Boolean
         get() = reaction != null || edit != null || delete != null ||
-            status != null || statusSeen != null || statusDelete != null || call != null
+            status != null || statusSeen != null || statusDelete != null || call != null || vote != null
 }
 
 /**
@@ -322,6 +328,18 @@ data class SharedContact(
     val name: String,
     val phones: List<String> = emptyList(),
 )
+
+/** A question with up to 12 options. [multi] lets people pick more than one. */
+@Serializable
+data class Poll(
+    val question: String,
+    val options: List<String>,
+    val multi: Boolean = false,
+)
+
+/** Someone's picks in a poll, as option indexes. Empty takes the vote back. */
+@Serializable
+data class PollVote(val poll: MessageRef, val choices: List<Int>)
 
 /** A finished call as a line in the chat. The caller sends it to both phones. */
 @Serializable

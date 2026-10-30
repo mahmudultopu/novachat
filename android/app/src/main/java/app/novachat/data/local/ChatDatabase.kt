@@ -24,6 +24,7 @@ import app.novachat.data.GroupMember
 import app.novachat.data.MessageRef
 import app.novachat.data.Status
 import app.novachat.data.NovaJson
+import app.novachat.data.Poll
 import app.novachat.data.SharedContact
 import app.novachat.data.SharedLocation
 import app.novachat.data.User
@@ -89,6 +90,9 @@ data class MessageEntity(
     val location: String? = null,
     /** A shared contact card: [SharedContact] as JSON. */
     val contact: String? = null,
+    /** A poll: [Poll] as JSON, and its votes as a map of user ID to option indexes. */
+    val poll: String? = null,
+    val votes: String? = null,
 ) {
     fun toChatMessage() = ChatMessage(
         clientId = clientId,
@@ -115,6 +119,8 @@ data class MessageEntity(
         callLog = callLog?.let { runCatching { NovaJson.decodeFromString<CallLog>(it) }.getOrNull() },
         location = location?.let { runCatching { NovaJson.decodeFromString<SharedLocation>(it) }.getOrNull() },
         contact = contact?.let { runCatching { NovaJson.decodeFromString<SharedContact>(it) }.getOrNull() },
+        poll = poll?.let { runCatching { NovaJson.decodeFromString<Poll>(it) }.getOrNull() },
+        votes = votes?.let { runCatching { NovaJson.decodeFromString<Map<String, List<Int>>>(it) }.getOrNull() }.orEmpty(),
     )
 }
 
@@ -361,6 +367,9 @@ abstract class ChatDao {
     @Query("UPDATE messages SET starred = :starred WHERE senderId = :senderId AND clientId = :clientId")
     abstract suspend fun setStarred(senderId: String, clientId: String, starred: Boolean)
 
+    @Query("UPDATE messages SET votes = :votes WHERE senderId = :senderId AND clientId = :clientId")
+    abstract suspend fun setVotes(senderId: String, clientId: String, votes: String?)
+
     @Query("UPDATE messages SET reactions = :reactions WHERE senderId = :senderId AND clientId = :clientId")
     abstract suspend fun setReactions(senderId: String, clientId: String, reactions: String?)
 
@@ -369,7 +378,7 @@ abstract class ChatDao {
 
     /** Deleted for everyone: keeps a placeholder bubble, drops the content. */
     @Query(
-        """UPDATE messages SET deleted = 1, body = '', attachment = NULL, localPath = NULL, location = NULL, contact = NULL,
+        """UPDATE messages SET deleted = 1, body = '', attachment = NULL, localPath = NULL, location = NULL, contact = NULL, poll = NULL, votes = NULL,
            reactions = NULL, starred = 0, replyTo = NULL, editedAtMillis = NULL
            WHERE senderId = :senderId AND clientId = :clientId""",
     )
@@ -539,7 +548,7 @@ abstract class ChatDao {
      * with the server never fetches it again.
      */
     @Query(
-        """UPDATE messages SET body = '', attachment = NULL, localPath = NULL, location = NULL, contact = NULL, replyTo = NULL, reactions = NULL,
+        """UPDATE messages SET body = '', attachment = NULL, localPath = NULL, location = NULL, contact = NULL, poll = NULL, votes = NULL, replyTo = NULL, reactions = NULL,
            callLog = NULL, starred = 0, control = '{}', expiresAtMillis = NULL
            WHERE senderId = :senderId AND clientId = :clientId""",
     )
@@ -635,7 +644,7 @@ abstract class ChatDao {
  */
 @Database(
     entities = [MessageEntity::class, UserEntity::class, MetaEntity::class, SessionEntity::class, PreKeyEntity::class, GroupEntity::class, StatusEntity::class, ChatPrefsEntity::class, ContactEntity::class],
-    version = 13,
+    version = 14,
     exportSchema = false,
 )
 abstract class ChatDatabase : RoomDatabase() {
@@ -754,9 +763,17 @@ abstract class ChatDatabase : RoomDatabase() {
             }
         }
 
+        /** 13 -> 14: polls. */
+        private val MIGRATION_13_14 = object : Migration(13, 14) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `messages` ADD COLUMN `poll` TEXT")
+                db.execSQL("ALTER TABLE `messages` ADD COLUMN `votes` TEXT")
+            }
+        }
+
         fun open(context: Context): ChatDatabase =
             Room.databaseBuilder(context, ChatDatabase::class.java, "novachat.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14)
                 .build()
     }
 }
