@@ -64,6 +64,7 @@ import app.novachat.data.Attachment
 import app.novachat.data.AttachmentKind
 import app.novachat.data.contactLabel
 import app.novachat.data.locationLabel
+import app.novachat.data.pollLabel
 import app.novachat.data.ChatMessage
 import app.novachat.ui.appContainer
 import java.io.File
@@ -301,6 +302,7 @@ fun previewText(m: ChatMessage): String {
     }
     m.location?.let { return locationLabel(it) }
     m.contact?.let { return contactLabel(it) }
+    m.poll?.let { return pollLabel(it) }
     val a = m.attachment ?: return m.body
     val label = when (a.kind) {
         AttachmentKind.image -> "Photo"

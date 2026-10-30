@@ -263,6 +263,7 @@ fun ChatScreen(
     val locationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
         if (result.values.any { it }) sharingLocation = true else toast("NovaChat needs location access to share where you are")
     }
+    var creatingPoll by remember { mutableStateOf(false) }
     var pickedContact by remember { mutableStateOf<SharedContact?>(null) }
     val pickContact = rememberLauncherForActivityResult(ActivityResultContracts.PickContact()) { uri ->
         if (uri != null) {
@@ -353,6 +354,16 @@ fun ChatScreen(
         )
     }
 
+    if (creatingPoll) {
+        CreatePollDialog(
+            onDismiss = { creatingPoll = false },
+            onSend = { poll ->
+                creatingPoll = false
+                repo.sendPoll(peerId, poll)
+            },
+        )
+    }
+
     pickedContact?.let { card ->
         SendContactDialog(
             card,
@@ -400,6 +411,10 @@ fun ChatScreen(
                     showAttach = false
                     val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED
                     if (granted) pickContact.launch(null) else contactsPermission.launch(Manifest.permission.READ_CONTACTS)
+                }
+                AttachOption(R.drawable.ic_poll, "Poll", Color(0xFFD9583D)) {
+                    showAttach = false
+                    creatingPoll = true
                 }
             }
         }
@@ -510,6 +525,9 @@ fun ChatScreen(
                         onRetry = { repo.retry(m.clientId) },
                         onLongPress = { actionsFor = m },
                         onMessageContact = ::messageContact,
+                        myId = myId,
+                        onVote = { choices -> repo.vote(m, choices) },
+                        nameOf = ::nameOf,
                         onQuoteClick = {
                             val index = shown.indexOfFirst { it.ref == m.replyTo }
                             if (index >= 0) {
@@ -633,6 +651,9 @@ private fun Bubble(
     onRetry: () -> Unit,
     onLongPress: () -> Unit,
     onMessageContact: (SharedContact) -> Unit,
+    myId: String?,
+    onVote: (List<Int>) -> Unit,
+    nameOf: (String) -> String,
     onQuoteClick: () -> Unit,
     onReactionsClick: () -> Unit,
 ) {
@@ -659,6 +680,7 @@ private fun Bubble(
             val attachment = m.attachment.takeUnless { m.undecryptable || m.deleted }
             val place = m.location.takeUnless { m.undecryptable || m.deleted }
             val card = m.contact.takeUnless { m.undecryptable || m.deleted }
+            val poll = m.poll.takeUnless { m.undecryptable || m.deleted }
             val visual = attachment != null && (attachment.kind == AttachmentKind.image || attachment.kind == AttachmentKind.video)
             val pad = if (visual) {
                 Modifier.padding(start = 5.dp, end = 5.dp, top = 5.dp, bottom = 6.dp)
@@ -710,6 +732,8 @@ private fun Bubble(
                     LocationCard(place, fg)
                 } else if (card != null) {
                     ContactCard(card, fg, onMessage = { onMessageContact(card) })
+                } else if (poll != null) {
+                    PollCard(poll, m.votes, myId, fg, onVote = onVote, nameOf = nameOf)
                 } else if (attachment != null) {
                     AttachmentView(m, attachment, fg, player)
                     if (m.body.isNotEmpty()) {

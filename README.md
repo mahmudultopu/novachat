@@ -489,6 +489,16 @@ changed it. In a group, only people who may edit the group info can change it.
   tap **Add contact** to save it, or **Message** to open a chat right away when
   the number is on NovaChat.
 
+### Polls
+
+* Tap the paperclip in a chat, then **Poll**. Write a question and 2 to 12
+  options, and turn on **Allow multiple answers** if people may pick more than
+  one.
+* Everyone in the chat votes by tapping an option, and taps it again to take
+  the vote back. Each option shows its count and a bar. **View votes** shows
+  who picked what.
+* Polls and votes are end-to-end encrypted, like messages. Works in groups too.
+
 ### Linked devices
 
 * Use one account on up to 4 more devices, like a tablet or a second phone.
@@ -631,5 +641,8 @@ Following the builder guide, in order:
     0.21.0, see [Linked devices](#linked-devices)).
 13. **Share more**: ~~location~~ (done in 0.23.0, see
     [Share your location](#share-your-location)), ~~contact cards~~ (done in
-    0.25.0, see [Share a contact](#share-a-contact)); polls and stickers next.
+    0.25.0, see [Share a contact](#share-a-contact)), ~~polls~~ (done in
+    0.26.0, see [Polls](#polls)); stickers next.
 14. A real **SMS provider** for production sign-up, and deployment.
+15. **Channels** (one-way broadcasts anyone can follow) and **Communities**
+    (groups of groups with an announcements channel).
