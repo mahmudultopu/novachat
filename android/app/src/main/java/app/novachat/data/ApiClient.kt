@@ -17,7 +17,13 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.IOException
 
-class ApiException(val status: Int, val code: String, override val message: String) : Exception(message)
+class ApiException(
+    val status: Int,
+    val code: String,
+    override val message: String,
+    /** The whole error the server sent, for errors that carry more than a message. */
+    val body: ApiErrorBody? = null,
+) : Exception(message)
 
 val NovaJson = Json {
     ignoreUnknownKeys = true
@@ -36,6 +42,25 @@ class ApiClient(private val http: OkHttpClient) {
             put("code", code)
             put("device_name", deviceName)
         })
+
+    /** Finishes signing in with the two-step PIN, or with [forgot] asks to reset it. */
+    suspend fun verifyPin(baseUrl: String, challenge: String, pin: String, forgot: Boolean): VerifyResponse =
+        call(baseUrl, "POST", "/v1/auth/verify-pin", null, buildJsonObject {
+            put("challenge", challenge)
+            put("pin", pin)
+            put("forgot", forgot)
+        })
+
+    suspend fun pinStatus(session: Session): PinStatus =
+        call(session.serverUrl, "GET", "/v1/me/pin", session.token, null)
+
+    suspend fun setPin(session: Session, pin: String) {
+        call<Unit>(session.serverUrl, "PUT", "/v1/me/pin", session.token, buildJsonObject { put("pin", pin) })
+    }
+
+    suspend fun removePin(session: Session) {
+        call<Unit>(session.serverUrl, "DELETE", "/v1/me/pin", session.token, null)
+    }
 
     suspend fun updateName(session: Session, name: String): User =
         call(session.serverUrl, "PATCH", "/v1/me", session.token, buildJsonObject { put("name", name) })
@@ -203,7 +228,7 @@ class ApiClient(private val http: OkHttpClient) {
         return response.use {
             if (!it.isSuccessful) {
                 val err = runCatching { NovaJson.decodeFromString<ApiErrorBody>(it.body?.string().orEmpty()) }.getOrNull()
-                throw ApiException(it.code, err?.error.orEmpty(), err?.message?.ifBlank { null } ?: "Server error ${it.code}")
+                throw ApiException(it.code, err?.error.orEmpty(), err?.message?.ifBlank { null } ?: "Server error ${it.code}", err)
             }
             try {
                 read(it)
@@ -243,7 +268,7 @@ class ApiClient(private val http: OkHttpClient) {
             val text = it.body?.string().orEmpty()
             if (!it.isSuccessful) {
                 val err = runCatching { NovaJson.decodeFromString<ApiErrorBody>(text) }.getOrNull()
-                throw ApiException(it.code, err?.error.orEmpty(), err?.message?.ifBlank { null } ?: "Server error ${it.code}")
+                throw ApiException(it.code, err?.error.orEmpty(), err?.message?.ifBlank { null } ?: "Server error ${it.code}", err)
             }
             if (T::class == Unit::class) Unit as T else NovaJson.decodeFromString<T>(text)
         }

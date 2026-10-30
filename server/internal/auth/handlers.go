@@ -21,6 +21,10 @@ type Handlers struct {
 func (h *Handlers) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/auth/request-code", h.requestCode)
 	mux.HandleFunc("POST /v1/auth/verify", h.verify)
+	mux.HandleFunc("POST /v1/auth/verify-pin", h.verifyPin)
+	mux.Handle("GET /v1/me/pin", h.Require(http.HandlerFunc(h.pinStatus)))
+	mux.Handle("PUT /v1/me/pin", h.Require(http.HandlerFunc(h.setPin)))
+	mux.Handle("DELETE /v1/me/pin", h.Require(http.HandlerFunc(h.removePin)))
 	mux.Handle("POST /v1/auth/logout", h.Require(http.HandlerFunc(h.logout)))
 	mux.Handle("GET /v1/me", h.Require(http.HandlerFunc(h.me)))
 	mux.Handle("PATCH /v1/me", h.Require(http.HandlerFunc(h.updateMe)))
@@ -100,7 +104,37 @@ func (h *Handlers) verify(w http.ResponseWriter, r *http.Request) {
 		internalError(w, err)
 		return
 	}
-	token, err := h.Store.CreateSession(r.Context(), user.ID, truncate(req.DeviceName, 100))
+	device := truncate(req.DeviceName, 100)
+	if !created {
+		// Two-step verification: the SMS code alone isn't enough.
+		hasPin, err := h.Store.HasPin(r.Context(), user.ID)
+		if err != nil {
+			internalError(w, err)
+			return
+		}
+		if hasPin {
+			challenge, err := h.newPinChallenge(r.Context(), user.ID, device)
+			if err != nil {
+				internalError(w, err)
+				return
+			}
+			httpx.JSON(w, http.StatusForbidden, map[string]string{
+				"error": "pin_required", "message": "enter your two-step verification PIN", "challenge": challenge,
+			})
+			return
+		}
+	}
+	h.signIn(w, r, user.ID, device, created)
+}
+
+// signIn starts a session on a new device and answers with its token.
+func (h *Handlers) signIn(w http.ResponseWriter, r *http.Request, userID, device string, created bool) {
+	token, err := h.Store.CreateSession(r.Context(), userID, device)
+	if err != nil {
+		internalError(w, err)
+		return
+	}
+	user, err := h.Store.UserFor(r.Context(), userID, userID)
 	if err != nil {
 		internalError(w, err)
 		return

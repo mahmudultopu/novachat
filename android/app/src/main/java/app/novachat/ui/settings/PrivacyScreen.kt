@@ -55,7 +55,7 @@ private fun levelLabel(level: String) = Levels.firstOrNull { it.first == level }
 /** Who sees your last seen, photo and about; read receipts; and blocked people. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun PrivacyScreen(onBack: () -> Unit) {
+fun PrivacyScreen(onBack: () -> Unit, openTwoStep: () -> Unit) {
     val repo = appContainer().chats
     val scope = rememberCoroutineScope()
     var settings by remember { mutableStateOf<PrivacySettings?>(null) }
@@ -128,6 +128,10 @@ fun PrivacyScreen(onBack: () -> Unit) {
                     Spacer(Modifier.width(12.dp))
                     Switch(checked = s.readReceipts, onCheckedChange = { on -> change(buildJsonObject { put("read_receipts", on) }) })
                 }
+            }
+            Spacer(Modifier.height(12.dp))
+            Section("Account") {
+                ChoiceRow("Two-step verification", "A PIN when signing in on a new phone", openTwoStep)
             }
             Spacer(Modifier.height(12.dp))
             Section("Blocked contacts") {

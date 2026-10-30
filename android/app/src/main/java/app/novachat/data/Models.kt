@@ -51,7 +51,18 @@ data class VerifyResponse(
 )
 
 @Serializable
-data class ApiErrorBody(val error: String = "", val message: String = "")
+data class ApiErrorBody(
+    val error: String = "",
+    val message: String = "",
+    /** Two-step verification: pass back with the PIN. */
+    val challenge: String? = null,
+    @SerialName("attempts_left") val attemptsLeft: Int? = null,
+    @SerialName("reset_at") val resetAt: String? = null,
+    @SerialName("locked_until") val lockedUntil: String? = null,
+)
+
+@Serializable
+data class PinStatus(val enabled: Boolean = false)
 
 /** Every frame the server sends over the WebSocket. */
 @Serializable

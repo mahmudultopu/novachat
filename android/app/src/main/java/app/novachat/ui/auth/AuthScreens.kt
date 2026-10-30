@@ -3,6 +3,7 @@ package app.novachat.ui.auth
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -42,6 +43,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -67,7 +69,7 @@ fun AuthFlow() {
                 .padding(horizontal = 24.dp),
         ) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                if (state.step == AuthUiState.Step.Code) {
+                if (state.step != AuthUiState.Step.Phone) {
                     IconButton(onClick = vm::back) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
                 } else {
                     Spacer(Modifier.size(48.dp))
@@ -81,6 +83,7 @@ fun AuthFlow() {
             when (state.step) {
                 AuthUiState.Step.Phone -> PhoneStep(state, vm)
                 AuthUiState.Step.Code -> CodeStep(state, vm)
+                AuthUiState.Step.Pin -> PinStep(state, vm)
             }
         }
     }
@@ -164,6 +167,58 @@ private fun CodeStep(state: AuthUiState, vm: AuthViewModel) {
     ErrorText(state.error)
     Spacer(Modifier.height(24.dp))
     PrimaryButton("Verify", enabled = state.code.length == 6, loading = state.loading, onClick = vm::verify)
+}
+
+/** Two-step verification: the account's PIN, after the SMS code. */
+@Composable
+private fun ColumnScope.PinStep(state: AuthUiState, vm: AuthViewModel) {
+    var confirmForgot by remember { mutableStateOf(false) }
+    Text("Two-step verification", style = MaterialTheme.typography.titleLarge, modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
+    Spacer(Modifier.height(8.dp))
+    Text(
+        "This account is protected with a PIN. Enter the 6-digit PIN you chose.",
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        textAlign = TextAlign.Center,
+        modifier = Modifier.fillMaxWidth(),
+    )
+    Spacer(Modifier.height(28.dp))
+    OutlinedTextField(
+        value = state.pin,
+        onValueChange = vm::onPin,
+        placeholder = { Text("••••••") },
+        singleLine = true,
+        visualTransformation = PasswordVisualTransformation(),
+        textStyle = MaterialTheme.typography.titleLarge.copy(letterSpacing = 8.sp, textAlign = TextAlign.Center),
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+        modifier = Modifier.fillMaxWidth(),
+    )
+    ErrorText(state.error)
+    Spacer(Modifier.height(24.dp))
+    PrimaryButton("Continue", enabled = state.pin.length == 6, loading = state.loading, onClick = vm::submitPin)
+    Spacer(Modifier.height(8.dp))
+    TextButton(onClick = { if (state.resetAt != null) vm.forgotPin() else confirmForgot = true }, modifier = Modifier.align(Alignment.CenterHorizontally)) {
+        Text(if (state.resetAt != null) "Sign in without PIN" else "Forgot PIN?")
+    }
+    if (confirmForgot) {
+        AlertDialog(
+            onDismissRequest = { confirmForgot = false },
+            title = { Text("Reset your PIN?") },
+            text = {
+                Text(
+                    "To protect your account, the reset takes 7 days. After that you can sign in with just the SMS code. " +
+                        "If you remember your PIN before then, signing in with it cancels the reset.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmForgot = false
+                    vm.forgotPin()
+                }) { Text("Reset") }
+            },
+            dismissButton = { TextButton(onClick = { confirmForgot = false }) { Text("Cancel") } },
+        )
+    }
 }
 
 /** First sign-in: ask for the name other people will see. */
