@@ -323,6 +323,13 @@ abstract class ChatDao {
     @Query("SELECT * FROM messages WHERE callLog IS NOT NULL AND deleted = 0 ORDER BY createdAtMillis DESC LIMIT 200")
     abstract fun callLogs(): Flow<List<MessageEntity>>
 
+    /** Visible messages whose text matches [pattern], a LIKE pattern where `!` escapes; newest first. */
+    @Query(
+        """SELECT * FROM messages WHERE control IS NULL AND system = 0 AND deleted = 0 AND undecryptable = 0
+           AND body LIKE :pattern ESCAPE '!' ORDER BY createdAtMillis DESC LIMIT 100""",
+    )
+    abstract suspend fun searchMessages(pattern: String): List<MessageEntity>
+
     @Query("SELECT * FROM messages WHERE starred = 1 ORDER BY createdAtMillis DESC")
     abstract fun starred(): Flow<List<MessageEntity>>
 

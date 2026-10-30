@@ -634,6 +634,14 @@ class ChatRepository(
         scope.launch { dao.setStarred(m.senderId, m.clientId, starred) }
     }
 
+    /** Messages in any chat containing [query] (ignoring case for English letters), newest first. */
+    suspend fun searchMessages(query: String): List<ChatMessage> {
+        val q = query.trim()
+        if (q.isEmpty()) return emptyList()
+        val escaped = q.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+        return dao.searchMessages("%$escaped%").map { it.toChatMessage() }
+    }
+
     /** Starred messages from every chat, newest first. */
     val starred: Flow<List<ChatMessage>> = dao.starred().map { list -> list.map { it.toChatMessage() } }
 

@@ -373,6 +373,15 @@ changed it. In a group, only people who may edit the group info can change it.
   server never fetches it again.
 * Messages sent before the timer was turned on stay.
 
+### Search
+
+* The magnifier on the chat list searches chat names and every message on
+  this phone. Tap a message to open the chat right at it.
+* The magnifier in a chat searches just that chat; the arrows step through
+  older and newer matches.
+* Search runs only on the phone: the server holds encrypted envelopes it
+  can't read, so there is nothing to search there.
+
 ### Block, report and privacy
 
 * **Settings → Privacy** sets who sees your last seen and online, profile
@@ -496,4 +505,6 @@ Following the builder guide, in order:
     messages~~ (done in 0.12.0, see [Disappearing messages](#disappearing-messages)),
     ~~block, report and privacy settings~~ (done in 0.13.0, see
     [Block, report and privacy](#block-report-and-privacy)).
-11. A real **SMS provider** for production sign-up, and deployment.
+11. **Find and personalise**: ~~search~~ (done in 0.14.0, see [Search](#search));
+    wallpapers, themes and contacts next.
+12. A real **SMS provider** for production sign-up, and deployment.
