@@ -1002,6 +1002,18 @@ class ChatRepository(
         return api.privacy(s).also { saveReadReceipts(it.readReceipts) }
     }
 
+    /** Whether two-step verification (a PIN on sign-in) is on. */
+    suspend fun pinEnabled(): Boolean {
+        val s = session ?: throw ApiException(0, "signed_out", "Not signed in")
+        return api.pinStatus(s).enabled
+    }
+
+    /** Sets the two-step verification PIN, or turns it off with null. */
+    suspend fun setPin(pin: String?) {
+        val s = session ?: throw ApiException(0, "signed_out", "Not signed in")
+        if (pin == null) api.removePin(s) else api.setPin(s, pin)
+    }
+
     /** Changes privacy settings; [changes] holds only the ones to change. */
     suspend fun updatePrivacy(changes: kotlinx.serialization.json.JsonObject): PrivacySettings {
         val s = session ?: throw ApiException(0, "signed_out", "Not signed in")

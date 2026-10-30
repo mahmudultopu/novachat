@@ -40,6 +40,7 @@ import app.novachat.ui.settings.AppearanceScreen
 import app.novachat.ui.settings.PrivacyScreen
 import app.novachat.ui.settings.ProfileScreen
 import app.novachat.ui.settings.StarredScreen
+import app.novachat.ui.settings.TwoStepScreen
 import app.novachat.ui.status.StatusViewerScreen
 import app.novachat.ui.status.TextStatusScreen
 
@@ -182,7 +183,10 @@ private fun MainNav(inviteLink: String?, onInviteShown: () -> Unit, chatToOpen: 
             AppearanceScreen(onBack = { nav.popBackStack() })
         }
         composable("privacy") {
-            PrivacyScreen(onBack = { nav.popBackStack() })
+            PrivacyScreen(onBack = { nav.popBackStack() }, openTwoStep = { nav.navigate("two-step") })
+        }
+        composable("two-step") {
+            TwoStepScreen(onBack = { nav.popBackStack() })
         }
         composable("profile") {
             ProfileScreen(onBack = { nav.popBackStack() })

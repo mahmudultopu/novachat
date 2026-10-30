@@ -435,12 +435,28 @@ changed it. In a group, only people who may edit the group info can change it.
 * **Report** sends only the reason you pick (messages stay encrypted) to the
   `reports` table for whoever runs the server, and can block them at once.
 
+### Two-step verification
+
+* **Settings → Privacy → Two-step verification** adds a 6-digit PIN. After
+  the SMS code, signing in on a new phone also asks for the PIN, so someone
+  who gets hold of your SMS code (or SIM) can't take over the account.
+* The server keeps only a bcrypt hash of the PIN. Five wrong PINs in a row
+  lock sign-in for 12 hours.
+* **Forgot PIN?** on the sign-in screen starts a reset that takes 7 days.
+  After that, the SMS code alone signs you in again. Signing in with the right
+  PIN meanwhile cancels the reset.
+* Under the hood, `POST /v1/auth/verify` answers `403 pin_required` with a
+  `challenge` that is valid for 10 minutes. The app sends it with the PIN to
+  `POST /v1/auth/verify-pin`.
+
 ### API
 
 | Method and path | Auth | Purpose |
 | --- | --- | --- |
 | `POST /v1/auth/request-code` `{phone}` | – | Send a code (dev mode returns `dev_code`) |
-| `POST /v1/auth/verify` `{phone, code, device_name}` | – | Returns `{token, user, is_new}` |
+| `POST /v1/auth/verify` `{phone, code, device_name}` | – | Returns `{token, user, is_new}`, or `403 pin_required` with a `challenge` |
+| `POST /v1/auth/verify-pin` `{challenge, pin, forgot}` | – | Finishes sign-in with the two-step PIN, or starts a 7-day reset |
+| `GET`, `PUT /v1/me/pin` `{pin}`, `DELETE /v1/me/pin` | Bearer | Two-step verification on, change or off |
 | `POST /v1/auth/logout` | Bearer | Ends this device's session |
 | `GET /v1/me`, `PATCH /v1/me` `{name, about}` | Bearer | Your profile |
 | `PUT /v1/me/avatar` (JPEG), `DELETE /v1/me/avatar` | Bearer | Set or remove your profile photo |
@@ -547,4 +563,7 @@ Following the builder guide, in order:
     ~~wallpapers and themes~~ (done in 0.15.0, see
     [Theme and wallpaper](#theme-and-wallpaper)), ~~contacts~~ (done in
     0.16.0, see [Contacts](#contacts)).
-12. A real **SMS provider** for production sign-up, and deployment.
+12. **Account safety**: ~~two-step verification~~ (done in 0.18.0, see
+    [Two-step verification](#two-step-verification)); chat backup and linked
+    devices next.
+13. A real **SMS provider** for production sign-up, and deployment.

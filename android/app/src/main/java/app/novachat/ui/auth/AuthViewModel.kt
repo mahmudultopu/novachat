@@ -19,8 +19,32 @@ data class AuthUiState(
     val devCode: String? = null,
     val loading: Boolean = false,
     val error: String? = null,
+    /** Two-step verification: the server's ticket for this sign-in, and the PIN typed so far. */
+    val challenge: String? = null,
+    val pin: String = "",
+    /** When a "forgot PIN" reset takes effect, as the server sent it. */
+    val resetAt: String? = null,
 ) {
-    enum class Step { Phone, Code }
+    enum class Step { Phone, Code, Pin }
+}
+
+/** What to tell someone whose PIN didn't work. */
+internal fun pinErrorText(e: ApiException): String = when (e.code) {
+    "bad_pin" -> e.body?.attemptsLeft?.let { left ->
+        if (left == 1) "Wrong PIN. 1 try left before sign-in locks." else "Wrong PIN. $left tries left before sign-in locks."
+    } ?: "Wrong PIN"
+    "pin_locked" -> "Too many wrong PINs. Try again after ${shortDate(e.body?.lockedUntil)}."
+    "pin_reset_pending" -> "Your PIN will be reset on ${shortDate(e.body?.resetAt)}. Come back then to sign in without it."
+    "bad_challenge" -> "This sign-in took too long. Go back and request a new code."
+    else -> e.message
+}
+
+/** "12 Nov, 14:05" in the phone's time zone, from the server's timestamp. */
+internal fun shortDate(iso: String?): String = try {
+    java.time.OffsetDateTime.parse(iso).atZoneSameInstant(java.time.ZoneId.systemDefault())
+        .format(java.time.format.DateTimeFormatter.ofPattern("d MMM, HH:mm"))
+} catch (e: Exception) {
+    "a while"
 }
 
 class AuthViewModel(private val container: AppContainer) : ViewModel() {
@@ -37,7 +61,15 @@ class AuthViewModel(private val container: AppContainer) : ViewModel() {
         if (digits.length == 6) verify()
     }
 
-    fun back() = _state.update { it.copy(step = AuthUiState.Step.Phone, code = "", error = null) }
+    fun onPin(v: String) {
+        val digits = v.filter(Char::isDigit).take(6)
+        _state.update { it.copy(pin = digits, error = null) }
+        if (digits.length == 6) submitPin()
+    }
+
+    fun back() = _state.update {
+        it.copy(step = AuthUiState.Step.Phone, code = "", error = null, challenge = null, pin = "", resetAt = null)
+    }
 
     fun setServerUrl(url: String) = viewModelScope.launch { container.sessionStore.setServerUrl(url) }
 
@@ -51,12 +83,35 @@ class AuthViewModel(private val container: AppContainer) : ViewModel() {
 
     fun verify() = launchWithErrors {
         val s = _state.value
-        val res = container.api.verify(
-            container.sessionStore.currentServerUrl(),
-            s.normalizedPhone,
-            s.code,
-            "${Build.MANUFACTURER} ${Build.MODEL}",
-        )
+        val res = try {
+            container.api.verify(
+                container.sessionStore.currentServerUrl(),
+                s.normalizedPhone,
+                s.code,
+                "${Build.MANUFACTURER} ${Build.MODEL}",
+            )
+        } catch (e: ApiException) {
+            val challenge = e.body?.challenge
+            if (e.code != "pin_required" || challenge == null) throw e
+            _state.update { it.copy(step = AuthUiState.Step.Pin, challenge = challenge, pin = "") }
+            return@launchWithErrors
+        }
+        container.sessionStore.signIn(res.token, res.user)
+    }
+
+    fun submitPin() = finishWithPin(forgot = false)
+
+    fun forgotPin() = finishWithPin(forgot = true)
+
+    private fun finishWithPin(forgot: Boolean) = launchWithErrors {
+        val s = _state.value
+        val challenge = s.challenge ?: return@launchWithErrors
+        val res = try {
+            container.api.verifyPin(container.sessionStore.currentServerUrl(), challenge, s.pin, forgot)
+        } catch (e: ApiException) {
+            _state.update { it.copy(pin = "", resetAt = e.body?.resetAt ?: it.resetAt) }
+            throw ApiException(e.status, e.code, pinErrorText(e), e.body)
+        }
         container.sessionStore.signIn(res.token, res.user)
     }
 

@@ -102,7 +102,7 @@ fun SettingsScreen(openProfile: () -> Unit, openStarred: () -> Unit, openPrivacy
                     Column {
                         Text("Privacy", style = MaterialTheme.typography.titleSmall)
                         Text(
-                            "Last seen, profile photo, read receipts, blocked contacts",
+                            "Last seen, profile photo, blocked contacts, two-step PIN",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
