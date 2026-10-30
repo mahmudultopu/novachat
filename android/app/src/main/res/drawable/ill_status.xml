@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Empty status list: a photo card inside a glowing ring, with a timer and sparks. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="180dp"
+    android:height="150dp"
+    android:viewportWidth="180"
+    android:viewportHeight="150">
+    <path android:fillColor="#FFF1DE" android:pathData="M30,14 H150 A22,22 0 0,1 172,36 V114 A22,22 0 0,1 150,136 H30 A22,22 0 0,1 8,114 V36 A22,22 0 0,1 30,14 Z" />
+    <path android:fillColor="#00000000" android:strokeColor="#7B5CFF" android:strokeWidth="7" android:strokeLineCap="round"
+        android:pathData="M90,27 A48,48 0 1,1 49,50" />
+    <path android:fillColor="#00000000" android:strokeColor="#5EE6D4" android:strokeWidth="7" android:strokeLineCap="round"
+        android:pathData="M58,40 A48,48 0 0,1 78,29" />
+    <path android:fillColor="#FFFFFF" android:strokeColor="#1E1450" android:strokeWidth="3"
+        android:pathData="M68,52 H112 A8,8 0 0,1 120,60 V92 A8,8 0 0,1 112,100 H68 A8,8 0 0,1 60,92 V60 A8,8 0 0,1 68,52 Z" />
+    <path android:fillColor="#7B5CFF" android:pathData="M64,96 L82,74 L94,86 L102,78 L117,96 Z" />
+    <path android:fillColor="#FFC94D" android:pathData="M100,66 a6,6 0 1,0 12,0 a6,6 0 1,0 -12,0 Z" />
+    <path android:fillColor="#FFFFFF" android:strokeColor="#1E1450" android:strokeWidth="3"
+        android:pathData="M128,98 a14,14 0 1,0 28,0 a14,14 0 1,0 -28,0 Z" />
+    <path android:fillColor="#00000000" android:strokeColor="#1E1450" android:strokeWidth="3" android:strokeLineCap="round"
+        android:pathData="M142,90 V98 L148,102" />
+    <path android:fillColor="#FFC94D" android:strokeColor="#1E1450" android:strokeWidth="2.5"
+        android:pathData="M34,96 Q36,107 47,109 Q36,111 34,122 Q32,111 21,109 Q32,107 34,96 Z" />
+</vector>

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Empty chat list: two overlapping speech bubbles and a nova spark, on a soft tile. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="180dp"
+    android:height="150dp"
+    android:viewportWidth="180"
+    android:viewportHeight="150">
+    <path android:fillColor="#EDE8FF" android:pathData="M30,14 H150 A22,22 0 0,1 172,36 V114 A22,22 0 0,1 150,136 H30 A22,22 0 0,1 8,114 V36 A22,22 0 0,1 30,14 Z" />
+    <path android:fillColor="#7B5CFF" android:strokeColor="#1E1450" android:strokeWidth="3"
+        android:pathData="M36,34 H102 A14,14 0 0,1 116,48 V76 A14,14 0 0,1 102,90 H56 L40,102 L43,90 H36 A14,14 0 0,1 22,76 V48 A14,14 0 0,1 36,34 Z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M38,52 H96 A4,4 0 0,1 96,60 H38 A4,4 0 0,1 38,52 Z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M38,68 H78 A4,4 0 0,1 78,76 H38 A4,4 0 0,1 38,68 Z" />
+    <path android:fillColor="#5EE6D4" android:strokeColor="#1E1450" android:strokeWidth="3"
+        android:pathData="M86,70 H144 A14,14 0 0,1 158,84 V106 A14,14 0 0,1 144,120 H140 L143,130 L128,120 H86 A14,14 0 0,1 72,106 V84 A14,14 0 0,1 86,70 Z" />
+    <path android:fillColor="#1E1450" android:pathData="M96,95 a5,5 0 1,0 10,0 a5,5 0 1,0 -10,0 Z M110,95 a5,5 0 1,0 10,0 a5,5 0 1,0 -10,0 Z M124,95 a5,5 0 1,0 10,0 a5,5 0 1,0 -10,0 Z" />
+    <path android:fillColor="#FFC94D" android:strokeColor="#1E1450" android:strokeWidth="2.5"
+        android:pathData="M146,18 Q148.5,31.5 162,34 Q148.5,36.5 146,50 Q143.5,36.5 130,34 Q143.5,31.5 146,18 Z" />
+</vector>

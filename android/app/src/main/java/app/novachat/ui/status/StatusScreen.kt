@@ -1,5 +1,16 @@
 package app.novachat.ui.status
 
+import app.novachat.ui.theme.LocalBubbleColors
+import app.novachat.ui.common.TabTopBar
+import app.novachat.ui.common.ListSection
+import app.novachat.ui.common.GradientIconFab
+import app.novachat.ui.common.EmptyState
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.painter.Painter
+import androidx.compose.ui.draw.clip
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.background
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -111,18 +122,14 @@ fun StatusScreen(openViewer: (String) -> Unit, openTextComposer: () -> Unit, mod
 
     Scaffold(
         modifier = modifier,
-        topBar = { TopAppBar(title = { Text("Status") }) },
+        topBar = { TabTopBar("Status") },
+        containerColor = MaterialTheme.colorScheme.background,
         floatingActionButton = {
             Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 SmallFloatingActionButton(onClick = openTextComposer, containerColor = MaterialTheme.colorScheme.secondaryContainer) {
                     Icon(Icons.Filled.Edit, "Write a text status")
                 }
-                FloatingActionButton(
-                    onClick = ::pick,
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary,
-                    shape = RoundedCornerShape(20.dp),
-                ) { Icon(painterResource(R.drawable.ic_camera), "Post a photo or video") }
+                GradientIconFab(painterResource(R.drawable.ic_camera), "Post a photo or video", onClick = ::pick)
             }
         },
     ) { padding ->
@@ -135,13 +142,29 @@ fun StatusScreen(openViewer: (String) -> Unit, openTextComposer: () -> Unit, mod
                         .padding(horizontal = 16.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    StatusRing(me, me?.id.orEmpty(), if (mine.isEmpty()) null else MaterialTheme.colorScheme.primary)
+                    Box {
+                        StatusRing(me, me?.id.orEmpty(), if (mine.isEmpty()) null else MaterialTheme.colorScheme.primary)
+                        if (mine.isEmpty()) {
+                            // A small "+" badge invites you to post your first update.
+                            Box(
+                                Modifier
+                                    .align(Alignment.BottomEnd)
+                                    .size(22.dp)
+                                    .clip(CircleShape)
+                                    .background(MaterialTheme.colorScheme.background)
+                                    .padding(2.dp)
+                                    .clip(CircleShape)
+                                    .background(LocalBubbleColors.current.mineBrush),
+                                contentAlignment = Alignment.Center,
+                            ) { Icon(Icons.Filled.Add, null, Modifier.size(14.dp), tint = LocalBubbleColors.current.onMine) }
+                        }
+                    }
                     Spacer(Modifier.width(14.dp))
                     Column {
-                        Text("My status", style = MaterialTheme.typography.titleMedium)
+                        Text(if (mine.isEmpty()) "Add to my status" else "My status", style = MaterialTheme.typography.titleMedium)
                         Text(
                             when {
-                                mine.isEmpty() -> "Tap to share a photo, video or text for 24 hours"
+                                mine.isEmpty() -> "Share a moment. It disappears after 24 hours"
                                 mine.any { !it.sent } -> "Sending…"
                                 else -> "${mine.size} ${if (mine.size == 1) "update" else "updates"} · ${formatListTime(mine.last().createdAtMillis)}"
                             },
@@ -152,12 +175,20 @@ fun StatusScreen(openViewer: (String) -> Unit, openTextComposer: () -> Unit, mod
                 }
             }
             if (others.isEmpty()) {
+                item(key = "write") {
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        OutlinedPill(Icons.Filled.Edit, "Write", Modifier.weight(1f), openTextComposer)
+                        OutlinedPill(painterResource(R.drawable.ic_camera), "Photo or video", Modifier.weight(1f), ::pick)
+                    }
+                }
                 item(key = "empty") {
-                    Text(
+                    EmptyState(
+                        R.drawable.ill_status,
+                        "No updates yet",
                         "Updates from people you chat with show up here. Yours go to everyone you have a one-to-one chat with.",
-                        textAlign = TextAlign.Center,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.fillMaxWidth().padding(32.dp),
                     )
                 }
             }
@@ -179,13 +210,27 @@ fun StatusScreen(openViewer: (String) -> Unit, openTextComposer: () -> Unit, mod
 }
 
 @Composable
-private fun SectionLabel(text: String) {
-    Text(
-        text,
-        style = MaterialTheme.typography.labelMedium,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 4.dp),
-    )
+private fun SectionLabel(text: String) = ListSection(text)
+
+@Composable
+private fun OutlinedPill(icon: Any, label: String, modifier: Modifier, onClick: () -> Unit) {
+    Row(
+        modifier
+            .clip(CircleShape)
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape)
+            .clickable(onClick = onClick)
+            .padding(vertical = 12.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        val tint = MaterialTheme.colorScheme.primary
+        when (icon) {
+            is ImageVector -> Icon(icon, null, Modifier.size(18.dp), tint = tint)
+            is Painter -> Icon(icon, null, Modifier.size(18.dp), tint = tint)
+        }
+        Spacer(Modifier.width(8.dp))
+        Text(label, style = MaterialTheme.typography.labelLarge, color = tint)
+    }
 }
 
 @Composable

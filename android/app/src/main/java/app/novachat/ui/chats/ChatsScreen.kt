@@ -2,6 +2,7 @@
 
 package app.novachat.ui.chats
 
+import app.novachat.ui.common.EmptyState
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
@@ -207,18 +208,15 @@ fun ChatsScreen(
     ) { padding ->
         if (conversations.isEmpty()) {
             Column(
-                Modifier.fillMaxSize().padding(padding).padding(32.dp),
+                Modifier.fillMaxSize().padding(padding),
                 verticalArrangement = Arrangement.Center,
-                horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                Image(painterResource(R.drawable.ic_logo), null, Modifier.size(88.dp))
-                Spacer(Modifier.height(20.dp))
-                Text("No chats yet", style = MaterialTheme.typography.headlineSmall)
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    "Tap + to message a friend by phone number, or to start a group.",
-                    textAlign = TextAlign.Center,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                EmptyState(
+                    R.drawable.ill_chats,
+                    "Say hello",
+                    "Message a friend by phone number, or start a group. Every chat is end-to-end encrypted.",
+                    action = "Start a chat",
+                    onAction = { showMenu = true },
                 )
             }
         } else {
