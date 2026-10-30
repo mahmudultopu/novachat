@@ -24,6 +24,7 @@ import app.novachat.data.GroupMember
 import app.novachat.data.MessageRef
 import app.novachat.data.Status
 import app.novachat.data.NovaJson
+import app.novachat.data.SharedContact
 import app.novachat.data.SharedLocation
 import app.novachat.data.User
 import kotlinx.coroutines.flow.Flow
@@ -86,6 +87,8 @@ data class MessageEntity(
     val expiresAtMillis: Long? = null,
     /** A shared location: [SharedLocation] as JSON. */
     val location: String? = null,
+    /** A shared contact card: [SharedContact] as JSON. */
+    val contact: String? = null,
 ) {
     fun toChatMessage() = ChatMessage(
         clientId = clientId,
@@ -111,6 +114,7 @@ data class MessageEntity(
         system = system,
         callLog = callLog?.let { runCatching { NovaJson.decodeFromString<CallLog>(it) }.getOrNull() },
         location = location?.let { runCatching { NovaJson.decodeFromString<SharedLocation>(it) }.getOrNull() },
+        contact = contact?.let { runCatching { NovaJson.decodeFromString<SharedContact>(it) }.getOrNull() },
     )
 }
 
@@ -365,7 +369,7 @@ abstract class ChatDao {
 
     /** Deleted for everyone: keeps a placeholder bubble, drops the content. */
     @Query(
-        """UPDATE messages SET deleted = 1, body = '', attachment = NULL, localPath = NULL, location = NULL,
+        """UPDATE messages SET deleted = 1, body = '', attachment = NULL, localPath = NULL, location = NULL, contact = NULL,
            reactions = NULL, starred = 0, replyTo = NULL, editedAtMillis = NULL
            WHERE senderId = :senderId AND clientId = :clientId""",
     )
@@ -535,7 +539,7 @@ abstract class ChatDao {
      * with the server never fetches it again.
      */
     @Query(
-        """UPDATE messages SET body = '', attachment = NULL, localPath = NULL, location = NULL, replyTo = NULL, reactions = NULL,
+        """UPDATE messages SET body = '', attachment = NULL, localPath = NULL, location = NULL, contact = NULL, replyTo = NULL, reactions = NULL,
            callLog = NULL, starred = 0, control = '{}', expiresAtMillis = NULL
            WHERE senderId = :senderId AND clientId = :clientId""",
     )
@@ -631,7 +635,7 @@ abstract class ChatDao {
  */
 @Database(
     entities = [MessageEntity::class, UserEntity::class, MetaEntity::class, SessionEntity::class, PreKeyEntity::class, GroupEntity::class, StatusEntity::class, ChatPrefsEntity::class, ContactEntity::class],
-    version = 12,
+    version = 13,
     exportSchema = false,
 )
 abstract class ChatDatabase : RoomDatabase() {
@@ -743,9 +747,16 @@ abstract class ChatDatabase : RoomDatabase() {
             }
         }
 
+        /** 12 -> 13: contact cards. */
+        private val MIGRATION_12_13 = object : Migration(12, 13) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `messages` ADD COLUMN `contact` TEXT")
+            }
+        }
+
         fun open(context: Context): ChatDatabase =
             Room.databaseBuilder(context, ChatDatabase::class.java, "novachat.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13)
                 .build()
     }
 }

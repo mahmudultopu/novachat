@@ -181,6 +181,7 @@ private fun MainNav(inviteLink: String?, onInviteShown: () -> Unit, chatToOpen: 
                 focus = focus,
                 onBack = { nav.popBackStack() },
                 openInfo = { isGroup -> nav.navigate(if (isGroup) "group/$peerId" else "contact/$peerId") },
+                openChat = { id -> nav.navigate("chat/$id") { popUpTo("home") } },
             )
         }
         composable("contact/{peerId}", arguments = listOf(navArgument("peerId") { type = NavType.StringType })) { entry ->

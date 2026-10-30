@@ -480,6 +480,15 @@ changed it. In a group, only people who may edit the group info can change it.
   spot in whatever maps app the phone has. NovaChat loads no map tiles, so no
   map company learns where you are.
 
+### Share a contact
+
+* Tap the paperclip in a chat, then **Contact**, and pick someone from your
+  address book. NovaChat shows the card (name and up to five numbers) before
+  sending it.
+* The card travels end-to-end encrypted, like text. The person who gets it can
+  tap **Add contact** to save it, or **Message** to open a chat right away when
+  the number is on NovaChat.
+
 ### Linked devices
 
 * Use one account on up to 4 more devices, like a tablet or a second phone.
@@ -621,6 +630,6 @@ Following the builder guide, in order:
     in 0.19.0, see [Chat backup](#chat-backup)), ~~linked devices~~ (done in
     0.21.0, see [Linked devices](#linked-devices)).
 13. **Share more**: ~~location~~ (done in 0.23.0, see
-    [Share your location](#share-your-location)); contact cards, polls and
-    stickers next.
+    [Share your location](#share-your-location)), ~~contact cards~~ (done in
+    0.25.0, see [Share a contact](#share-a-contact)); polls and stickers next.
 14. A real **SMS provider** for production sign-up, and deployment.
