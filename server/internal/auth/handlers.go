@@ -35,6 +35,7 @@ func (h *Handlers) Register(mux *http.ServeMux) {
 	mux.Handle("PUT /v1/blocks/{id}", h.Require(http.HandlerFunc(h.block)))
 	mux.Handle("DELETE /v1/blocks/{id}", h.Require(http.HandlerFunc(h.unblock)))
 	mux.Handle("POST /v1/reports", h.Require(http.HandlerFunc(h.report)))
+	mux.Handle("POST /v1/contacts/match", h.Require(http.HandlerFunc(h.matchContacts)))
 }
 
 func (h *Handlers) requestCode(w http.ResponseWriter, r *http.Request) {

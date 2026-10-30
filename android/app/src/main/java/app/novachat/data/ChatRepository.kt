@@ -10,6 +10,7 @@ import app.novachat.crypto.b64
 import app.novachat.crypto.unb64
 import app.novachat.data.local.ChatDatabase
 import app.novachat.data.local.ChatPrefsEntity
+import app.novachat.data.local.ContactEntity
 import app.novachat.data.local.MessageEntity
 import app.novachat.data.local.GroupEntity
 import app.novachat.data.local.MetaEntity
@@ -481,6 +482,20 @@ class ChatRepository(
                 }
             }
         }
+    }
+
+    /** The address book as last synced, with NovaChat profiles for those who have one. */
+    val contacts: Flow<List<Contact>> = combine(dao.contacts(), people) { list, known ->
+        list.map { Contact(it.phone, it.name, it.userId?.let(known::get)) }
+    }
+
+    /** Asks the server which contacts use NovaChat, and keeps the answer on the phone. */
+    suspend fun syncContacts(book: List<PhoneContact>) {
+        val s = session ?: return
+        val users = book.map { it.phone }.chunked(CONTACTS_PER_REQUEST).flatMap { api.matchContacts(s, it) }
+        users.forEach { dao.upsertUser(it.toEntity()) }
+        val byPhone = users.associateBy { it.phone }
+        dao.replaceContacts(book.map { ContactEntity(it.phone, it.name, byPhone[it.phone]?.id) })
     }
 
     /** Finds a NovaChat user by phone number and remembers them. */
@@ -1557,6 +1572,8 @@ class ChatRepository(
     private companion object {
         const val SYNC_PAGE = 500
         const val MAX_PINNED = 3
+        // The server takes at most this many numbers per request.
+        const val CONTACTS_PER_REQUEST = 5000
         const val SWEEP_MS = 15_000L
         const val MAX_DISAPPEAR_SEC = 90 * 24 * 60 * 60
         const val TYPING_MS = 4_000L

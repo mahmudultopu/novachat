@@ -148,6 +148,12 @@ class ApiClient(private val http: OkHttpClient) {
         call<Unit>(session.serverUrl, "DELETE", "/v1/blocks/$userId", session.token, null)
     }
 
+    /** Which of these phone numbers belong to NovaChat users. The server doesn't keep them. */
+    suspend fun matchContacts(session: Session, phones: List<String>): List<User> =
+        call<ContactMatches>(session.serverUrl, "POST", "/v1/contacts/match", session.token, buildJsonObject {
+            put("phones", JsonArray(phones.map { JsonPrimitive(it) }))
+        }).users
+
     suspend fun report(session: Session, userId: String, reason: String, block: Boolean) {
         call<Unit>(session.serverUrl, "POST", "/v1/reports", session.token, buildJsonObject {
             put("user_id", userId)

@@ -82,6 +82,7 @@ import kotlinx.coroutines.launch
 fun ChatsScreen(
     openChat: (String) -> Unit,
     openMessage: (String, MessageRef) -> Unit,
+    openNewChat: () -> Unit,
     openNewGroup: () -> Unit,
     openJoin: () -> Unit,
     modifier: Modifier = Modifier,
@@ -92,7 +93,6 @@ fun ChatsScreen(
     val session by container.session.collectAsStateWithLifecycle()
     val myId = (session as? SessionState.SignedIn)?.session?.user?.id
     val people by container.chats.people.collectAsStateWithLifecycle(initialValue = emptyMap())
-    var newChat by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
     var showArchived by remember { mutableStateOf(false) }
     var actionsFor by remember { mutableStateOf<Conversation?>(null) }
@@ -196,9 +196,9 @@ fun ChatsScreen(
     if (showMenu) {
         ModalBottomSheet(onDismissRequest = { showMenu = false }) {
             Column(Modifier.padding(bottom = 24.dp)) {
-                MenuRow(rememberVectorPainter(Icons.Filled.Person), "New chat", "Message someone by phone number") {
+                MenuRow(rememberVectorPainter(Icons.Filled.Person), "New chat", "Your contacts on NovaChat, or any number") {
                     showMenu = false
-                    newChat = true
+                    openNewChat()
                 }
                 MenuRow(painterResource(R.drawable.ic_group), "New group", "Chat with several people at once") {
                     showMenu = false
@@ -218,12 +218,6 @@ fun ChatsScreen(
         })
     }
 
-    if (newChat) {
-        NewChatDialog(onDismiss = { newChat = false }, onFound = { id ->
-            newChat = false
-            openChat(id)
-        })
-    }
 }
 
 @Composable
@@ -336,53 +330,6 @@ private fun ConversationRow(
             }
         }
     }
-}
-
-@Composable
-private fun NewChatDialog(onDismiss: () -> Unit, onFound: (String) -> Unit) {
-    val container = appContainer()
-    val scope = rememberCoroutineScope()
-    var phone by remember { mutableStateOf("+") }
-    var error by remember { mutableStateOf<String?>(null) }
-    var loading by remember { mutableStateOf(false) }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("New chat") },
-        text = {
-            Column {
-                OutlinedTextField(
-                    value = phone,
-                    onValueChange = { phone = it; error = null },
-                    label = { Text("Phone number with country code") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
-                    isError = error != null,
-                )
-                error?.let {
-                    Spacer(Modifier.height(8.dp))
-                    Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(
-                enabled = !loading && phone.count(Char::isDigit) >= 6,
-                onClick = {
-                    loading = true
-                    scope.launch {
-                        try {
-                            onFound(container.chats.findByPhone(phone).id)
-                        } catch (e: ApiException) {
-                            error = e.message
-                        }
-                        loading = false
-                    }
-                },
-            ) { Text("Start chat") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-    )
 }
 
 /** Long-press menu for a chat: pin, mute and archive. */
