@@ -1,5 +1,8 @@
 package app.novachat.ui.call
 
+import app.novachat.ui.common.TabTopBar
+import app.novachat.ui.common.ListSection
+import app.novachat.ui.common.EmptyState
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -49,26 +52,26 @@ fun CallsScreen(openChat: (String) -> Unit, modifier: Modifier = Modifier) {
     val myId = (session as? SessionState.SignedIn)?.session?.user?.id
     val call = rememberCallStarter()
 
-    Scaffold(modifier = modifier, topBar = { TopAppBar(title = { Text("Calls") }) }) { padding ->
+    Scaffold(
+        modifier = modifier,
+        topBar = { TabTopBar("Calls") },
+        containerColor = MaterialTheme.colorScheme.background,
+    ) { padding ->
         if (logs.isEmpty()) {
             Column(
-                Modifier.fillMaxSize().padding(padding).padding(32.dp),
+                Modifier.fillMaxSize().padding(padding),
                 verticalArrangement = Arrangement.Center,
-                horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                Icon(painterResource(R.drawable.ic_call), null, Modifier.size(40.dp), tint = MaterialTheme.colorScheme.primary)
-                Spacer(Modifier.height(16.dp))
-                Text("No calls yet", style = MaterialTheme.typography.titleMedium)
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    "Open a chat and tap the phone or camera button at the top. Calls are end-to-end encrypted.",
-                    textAlign = TextAlign.Center,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                EmptyState(
+                    R.drawable.ill_calls,
+                    "No calls yet",
+                    "Open a chat and tap the phone or camera button at the top. Every call is end-to-end encrypted.",
                 )
             }
             return@Scaffold
         }
         LazyColumn(Modifier.fillMaxSize().padding(padding)) {
+            item(key = "recent") { ListSection("Recent") }
             items(logs, key = { it.senderId + it.clientId }) { m ->
                 val log = m.callLog ?: return@items
                 val outgoing = m.senderId == myId
