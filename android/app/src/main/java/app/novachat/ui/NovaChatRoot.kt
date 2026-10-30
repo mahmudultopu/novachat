@@ -37,6 +37,7 @@ import app.novachat.ui.chat.ContactInfoScreen
 import app.novachat.ui.home.HomeScreen
 import app.novachat.ui.chats.NewChatScreen
 import app.novachat.ui.settings.AppearanceScreen
+import app.novachat.ui.settings.BackupScreen
 import app.novachat.ui.settings.PrivacyScreen
 import app.novachat.ui.settings.ProfileScreen
 import app.novachat.ui.settings.StarredScreen
@@ -115,6 +116,7 @@ private fun MainNav(inviteLink: String?, onInviteShown: () -> Unit, chatToOpen: 
                 openStarred = { nav.navigate("starred") },
                 openPrivacy = { nav.navigate("privacy") },
                 openAppearance = { nav.navigate("appearance") },
+                openBackup = { nav.navigate("backup") },
                 openNewChat = { nav.navigate("newchat") },
                 openNewGroup = { nav.navigate("newgroup") },
                 openJoin = { joining = "" },
@@ -181,6 +183,9 @@ private fun MainNav(inviteLink: String?, onInviteShown: () -> Unit, chatToOpen: 
         }
         composable("appearance") {
             AppearanceScreen(onBack = { nav.popBackStack() })
+        }
+        composable("backup") {
+            BackupScreen(onBack = { nav.popBackStack() })
         }
         composable("privacy") {
             PrivacyScreen(onBack = { nav.popBackStack() }, openTwoStep = { nav.navigate("two-step") })

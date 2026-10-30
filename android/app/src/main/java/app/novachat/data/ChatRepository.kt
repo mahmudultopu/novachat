@@ -506,6 +506,47 @@ class ChatRepository(
         dao.replaceContacts(book.map { ContactEntity(it.phone, it.name, byPhone[it.phone]?.id) })
     }
 
+    /**
+     * A password-locked copy of the chats on this phone, to keep wherever the
+     * user likes. Media files and encryption keys are left out; attachments
+     * keep their keys, so they can be downloaded again while the server has them.
+     */
+    suspend fun createBackup(password: String): ByteArray {
+        val me = session?.user?.id ?: error("not signed in")
+        val data = BackupData(
+            userId = me,
+            createdAtMillis = System.currentTimeMillis(),
+            messages = dao.allMessages().map { it.copy(localPath = null, envelope = null, envelopeKey = null) },
+            users = dao.allUsers(),
+            groups = dao.allGroups(),
+            chatPrefs = dao.allChatPrefs(),
+            contacts = dao.allContacts(),
+        )
+        return BackupCrypto.encrypt(NovaJson.encodeToString(data).toByteArray(), password)
+    }
+
+    /** Copies a backup's chats onto this phone; returns how many messages it brought back. */
+    suspend fun restoreBackup(file: ByteArray, password: String): Int {
+        val me = session?.user?.id ?: error("not signed in")
+        val data = try {
+            NovaJson.decodeFromString<BackupData>(BackupCrypto.decrypt(file, password).decodeToString())
+        } catch (e: kotlinx.serialization.SerializationException) {
+            throw BackupException("This backup can't be read by this version of NovaChat")
+        }
+        if (data.userId != me) throw BackupException("This backup belongs to another account")
+        return writeLock.withLock {
+            db.withTransaction {
+                val restore = messagesToRestore(data.messages, dao.readableMessageKeys().toSet())
+                dao.insertUsersIfMissing(data.users)
+                dao.insertGroupsIfMissing(data.groups)
+                dao.insertChatPrefsIfMissing(data.chatPrefs)
+                dao.insertContactsIfMissing(data.contacts)
+                dao.upsertMessages(restore)
+                restore.count { it.control == null && !it.system && it.parentClientId == null }
+            }
+        }
+    }
+
     /** Finds a NovaChat user by phone number and remembers them. */
     suspend fun findByPhone(phone: String): User {
         val s = session ?: error("not signed in")

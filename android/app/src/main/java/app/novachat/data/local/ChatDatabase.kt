@@ -26,6 +26,7 @@ import app.novachat.data.Status
 import app.novachat.data.NovaJson
 import app.novachat.data.User
 import kotlinx.coroutines.flow.Flow
+import kotlinx.serialization.Serializable
 
 /**
  * One message, sent or received. [id] is the server's sequence number and
@@ -37,6 +38,7 @@ import kotlinx.coroutines.flow.Flow
     primaryKeys = ["senderId", "clientId"],
     indices = [Index("peerId", "id"), Index("id")],
 )
+@Serializable
 data class MessageEntity(
     val senderId: String,
     val clientId: String,
@@ -109,6 +111,7 @@ data class MessageEntity(
 }
 
 @Entity(tableName = "users")
+@Serializable
 data class UserEntity(
     @PrimaryKey val id: String,
     val phone: String,
@@ -121,6 +124,7 @@ data class UserEntity(
 }
 
 @Entity(tableName = "groups")
+@Serializable
 data class GroupEntity(
     @PrimaryKey val id: String,
     val name: String,
@@ -201,6 +205,7 @@ data class PreKeyEntity(
 
 /** How the user arranged one chat: pinned, archived or muted. Kept on this phone only. */
 @Entity(tableName = "chat_prefs")
+@Serializable
 data class ChatPrefsEntity(
     @PrimaryKey val peerId: String,
     val pinnedAtMillis: Long? = null,
@@ -211,6 +216,7 @@ data class ChatPrefsEntity(
 
 /** Someone in the phone's address book; [userId] is set when they use NovaChat. */
 @Entity(tableName = "contacts")
+@Serializable
 data class ContactEntity(
     @PrimaryKey val phone: String,
     val name: String,
@@ -218,6 +224,9 @@ data class ContactEntity(
 )
 
 data class UnreadCount(val peerId: String, val unread: Int)
+
+/** Which message a row is: the sender and the sender's client ID. */
+data class MessageKey(val senderId: String, val clientId: String)
 
 @Dao
 abstract class ChatDao {
@@ -552,6 +561,39 @@ abstract class ChatDao {
         deleteContacts()
         insertContacts(contacts)
     }
+
+    // Chat backup: everything a backup holds, and inserts that never overwrite what's on the phone.
+
+    @Query("SELECT * FROM messages WHERE id IS NOT NULL")
+    abstract suspend fun allMessages(): List<MessageEntity>
+
+    /** Messages this phone could read itself; a restore never replaces them. */
+    @Query("SELECT senderId, clientId FROM messages WHERE undecryptable = 0")
+    abstract suspend fun readableMessageKeys(): List<MessageKey>
+
+    @Query("SELECT * FROM users")
+    abstract suspend fun allUsers(): List<UserEntity>
+
+    @Query("SELECT * FROM groups")
+    abstract suspend fun allGroups(): List<GroupEntity>
+
+    @Query("SELECT * FROM chat_prefs")
+    abstract suspend fun allChatPrefs(): List<ChatPrefsEntity>
+
+    @Query("SELECT * FROM contacts")
+    abstract suspend fun allContacts(): List<ContactEntity>
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    abstract suspend fun insertUsersIfMissing(users: List<UserEntity>)
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    abstract suspend fun insertGroupsIfMissing(groups: List<GroupEntity>)
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    abstract suspend fun insertChatPrefsIfMissing(prefs: List<ChatPrefsEntity>)
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    abstract suspend fun insertContactsIfMissing(contacts: List<ContactEntity>)
 
     @Query("DELETE FROM messages")
     abstract suspend fun deleteMessages()
