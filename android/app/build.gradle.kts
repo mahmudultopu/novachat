@@ -16,8 +16,8 @@ android {
         applicationId = "app.novachat"
         minSdk = 26
         targetSdk = 35
-        versionCode = 21
-        versionName = "0.21.0"
+        versionCode = 22
+        versionName = "0.22.0"
         buildConfigField("String", "DEFAULT_SERVER_URL", "\"$serverUrl\"")
         // Calls (WebRTC) ship native code per CPU type. Real phones are ARM,
         // so leaving out the emulator-only x86 builds keeps the app ~25 MB

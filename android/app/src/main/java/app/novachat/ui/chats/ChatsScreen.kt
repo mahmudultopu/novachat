@@ -63,13 +63,23 @@ import app.novachat.ui.chat.systemText
 import app.novachat.R
 import app.novachat.data.User
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
+import androidx.compose.foundation.border
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.defaultMinSize
-import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.draw.shadow
 import app.novachat.ui.theme.LocalBubbleColors
 import app.novachat.ui.theme.NovaBrandBrush
@@ -96,6 +106,9 @@ fun ChatsScreen(
     openNewChat: () -> Unit,
     openNewGroup: () -> Unit,
     openJoin: () -> Unit,
+    openStarred: () -> Unit,
+    openDevices: () -> Unit,
+    openSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val container = appContainer()
@@ -109,8 +122,12 @@ fun ChatsScreen(
     var actionsFor by remember { mutableStateOf<Conversation?>(null) }
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+    var showOverflow by remember { mutableStateOf(false) }
+    var chatFilter by remember { mutableStateOf(ChatFilter.All) }
+    val listState = rememberLazyListState()
     val archived = conversations.filter { it.prefs.archived }
-    val shown = if (showArchived) archived else conversations.filterNot { it.prefs.archived }
+    val inbox = conversations.filterNot { it.prefs.archived }
+    val shown = if (showArchived) archived else inbox.filter(chatFilter.test)
     LaunchedEffect(archived.isEmpty()) { if (archived.isEmpty()) showArchived = false }
     BackHandler(enabled = showArchived) { showArchived = false }
 
@@ -155,14 +172,35 @@ fun ChatsScreen(
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
                 actions = {
-                    if (conversations.isNotEmpty()) {
-                        IconButton(onClick = { searching = true }) { Icon(Icons.Filled.Search, "Search") }
+                    Box {
+                        IconButton(onClick = { showOverflow = true }) { Icon(Icons.Filled.MoreVert, "More options") }
+                        DropdownMenu(
+                            expanded = showOverflow,
+                            onDismissRequest = { showOverflow = false },
+                            shape = MaterialTheme.shapes.medium,
+                            containerColor = MaterialTheme.colorScheme.surface,
+                        ) {
+                            listOf(
+                                "New group" to openNewGroup,
+                                "Join a group" to openJoin,
+                                "Linked devices" to openDevices,
+                                "Starred messages" to openStarred,
+                                "Settings" to openSettings,
+                            ).forEach { (label, action) ->
+                                DropdownMenuItem(
+                                    text = { Text(label, style = MaterialTheme.typography.bodyLarge) },
+                                    onClick = { showOverflow = false; action() },
+                                    contentPadding = PaddingValues(horizontal = 20.dp, vertical = 4.dp),
+                                )
+                            }
+                        }
                     }
                 },
             )
         },
         floatingActionButton = {
-            GradientFab(onClick = { showMenu = true }) { Icon(Icons.Filled.Add, "New chat") }
+            // Wide with a label at the top of the list; shrinks to a round button while scrolling.
+            GradientFab(expanded = listState.firstVisibleItemIndex == 0, onClick = { showMenu = true })
         },
         snackbarHost = { SnackbarHost(snackbar) },
         containerColor = MaterialTheme.colorScheme.background,
@@ -184,7 +222,13 @@ fun ChatsScreen(
                 )
             }
         } else {
-            LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(bottom = 88.dp)) {
+            LazyColumn(Modifier.fillMaxSize().padding(padding), state = listState, contentPadding = PaddingValues(bottom = 96.dp)) {
+                if (!showArchived) {
+                    item(key = "search") { SearchPill { searching = true } }
+                    item(key = "filters") {
+                        FilterChips(chatFilter, unread = inbox.count { it.unread > 0 }) { chatFilter = it }
+                    }
+                }
                 if (showArchived) {
                     item {
                         Text(
@@ -195,7 +239,7 @@ fun ChatsScreen(
                             modifier = Modifier.fillMaxWidth().padding(horizontal = 32.dp, vertical = 12.dp),
                         )
                     }
-                } else if (archived.isNotEmpty()) {
+                } else if (archived.isNotEmpty() && chatFilter == ChatFilter.All) {
                     item(key = "archived") {
                         ArchivedRow(unreadChats = archived.count { it.unread > 0 }) { showArchived = true }
                     }
@@ -203,6 +247,18 @@ fun ChatsScreen(
                 items(shown, key = { it.peer.id }) { c ->
                     ConversationRow(c, myId, people, Modifier.animateItem(), onLongClick = { actionsFor = c }) { openChat(c.peer.id) }
                 }
+                if (shown.isEmpty() && !showArchived) {
+                    item(key = "none") {
+                        Text(
+                            chatFilter.emptyText,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 32.dp, vertical = 40.dp),
+                        )
+                    }
+                }
+                item(key = "e2e") { EncryptedNote() }
             }
         }
     }
@@ -234,21 +290,106 @@ fun ChatsScreen(
 
 }
 
-/** The round-cornered "new chat" button, filled with the accent's gradient and a soft coloured glow. */
+/** Which chats the list shows. */
+private enum class ChatFilter(val label: String, val emptyText: String, val test: (Conversation) -> Boolean) {
+    All("All", "No chats here yet", { true }),
+    Unread("Unread", "You're all caught up. No unread chats.", { it.unread > 0 }),
+    Groups("Groups", "No groups yet. Start one from the menu.", { it.group != null }),
+    Pinned("Pinned", "Long-press a chat to pin it to the top.", { it.prefs.pinned }),
+}
+
+/** A rounded search field look-alike; tapping it opens the full search screen. */
 @Composable
-private fun GradientFab(onClick: () -> Unit, content: @Composable () -> Unit) {
+private fun SearchPill(onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp)
+            .clip(CircleShape)
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 18.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Filled.Search, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.width(14.dp))
+        Text("Search chats and messages", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+@Composable
+private fun FilterChips(selected: ChatFilter, unread: Int, onSelect: (ChatFilter) -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        ChatFilter.entries.forEach { f ->
+            val on = f == selected
+            val label = if (f == ChatFilter.Unread && unread > 0) "${f.label} $unread" else f.label
+            Text(
+                label,
+                style = MaterialTheme.typography.labelLarge,
+                color = if (on) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .clip(CircleShape)
+                    .background(if (on) MaterialTheme.colorScheme.primaryContainer else Color.Transparent)
+                    .border(1.dp, if (on) Color.Transparent else MaterialTheme.colorScheme.outlineVariant, CircleShape)
+                    .clickable { onSelect(f) }
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+            )
+        }
+    }
+}
+
+/** A quiet reminder under the list that chats are private. */
+@Composable
+private fun EncryptedNote() {
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 20.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Filled.Lock, null, Modifier.size(13.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.width(6.dp))
+        Text(
+            buildAnnotatedString {
+                append("Chats and calls are protected by ")
+                withStyle(SpanStyle(color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)) {
+                    append("end-to-end encryption")
+                }
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/** The "new chat" button, filled with the accent's gradient and a soft coloured glow. */
+@Composable
+private fun GradientFab(expanded: Boolean, onClick: () -> Unit) {
     val bubbles = LocalBubbleColors.current
     val shape = RoundedCornerShape(20.dp)
-    Box(
+    Row(
         Modifier
-            .size(60.dp)
+            .height(60.dp)
+            .defaultMinSize(minWidth = 60.dp)
             .shadow(14.dp, shape, ambientColor = bubbles.mine, spotColor = bubbles.mine)
             .clip(shape)
             .background(bubbles.mineBrush)
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center,
+            .clickable(onClick = onClick)
+            .animateContentSize()
+            .padding(horizontal = 18.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center,
     ) {
-        CompositionLocalProvider(LocalContentColor provides bubbles.onMine, content = content)
+        Icon(Icons.Filled.Add, "New chat", tint = bubbles.onMine)
+        if (expanded) {
+            Spacer(Modifier.width(10.dp))
+            Text("New chat", style = MaterialTheme.typography.labelLarge, color = bubbles.onMine)
+        }
     }
 }
 
