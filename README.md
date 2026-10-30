@@ -470,6 +470,16 @@ changed it. In a group, only people who may edit the group info can change it.
   videos keep their keys, so they download again while the server has them.
 * A backup only restores into the account that made it.
 
+### Share your location
+
+* Tap the paperclip in a chat, then **Location**. NovaChat finds where you are
+  (GPS or the network, whichever answers first), shows how accurate the fix
+  is, and lets you name the place ("Home") before sending.
+* The location travels end-to-end encrypted inside the message, like text.
+  The bubble draws a small map with a pin; **Open in maps** opens the exact
+  spot in whatever maps app the phone has. NovaChat loads no map tiles, so no
+  map company learns where you are.
+
 ### Linked devices
 
 * Use one account on up to 4 more devices, like a tablet or a second phone.
@@ -610,4 +620,7 @@ Following the builder guide, in order:
     [Two-step verification](#two-step-verification)), ~~chat backup~~ (done
     in 0.19.0, see [Chat backup](#chat-backup)), ~~linked devices~~ (done in
     0.21.0, see [Linked devices](#linked-devices)).
-13. A real **SMS provider** for production sign-up, and deployment.
+13. **Share more**: ~~location~~ (done in 0.23.0, see
+    [Share your location](#share-your-location)); contact cards, polls and
+    stickers next.
+14. A real **SMS provider** for production sign-up, and deployment.
