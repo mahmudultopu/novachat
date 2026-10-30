@@ -47,8 +47,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.novachat.R
+import app.novachat.SessionState
 import app.novachat.calls.CallPhase
+import app.novachat.calls.MemberPhase
 import app.novachat.calls.CallState
+import app.novachat.data.User
 import app.novachat.ui.appContainer
 import app.novachat.ui.chat.formatDuration
 import app.novachat.ui.common.Avatar
@@ -72,12 +75,20 @@ fun CallScreen(call: CallState, answerRequested: Boolean, onAnswerHandled: () ->
     val container = appContainer()
     val calls = container.calls
     val people by container.chats.people.collectAsStateWithLifecycle(initialValue = emptyMap())
+    val groups by container.chats.groups.collectAsStateWithLifecycle(initialValue = emptyMap())
     val peer = people[call.peerId]
-    val name = peer?.displayName ?: "…"
+    val group = if (call.group) groups[call.peerId] else null
+    val name = if (call.group) group?.name ?: "Group call" else peer?.displayName ?: "…"
+    val avatarId = if (call.group) group?.avatarId else peer?.avatarId
     val local by calls.localVideo.collectAsStateWithLifecycle()
     val remote by calls.remoteVideo.collectAsStateWithLifecycle()
+    val memberVideo by calls.memberVideo.collectAsStateWithLifecycle()
+    val session by container.session.collectAsStateWithLifecycle()
+    val me = (session as? SessionState.SignedIn)?.session?.user
     val live = call.phase == CallPhase.Connected || call.phase == CallPhase.Reconnecting
-    val showRemote = remote != null && call.remoteVideo && live
+    val showRemote = !call.group && remote != null && call.remoteVideo && live
+    // Group calls show everyone in a grid once we're in the call.
+    val showGrid = call.group && call.phase != CallPhase.Incoming && call.phase != CallPhase.Ended
     var controlsVisible by remember { mutableStateOf(true) }
 
     // Back leaves the app with the call still going, like pressing Home.
@@ -85,8 +96,9 @@ fun CallScreen(call: CallState, answerRequested: Boolean, onAnswerHandled: () ->
 
     // Keep the screen on for video; voice calls use the proximity sensor instead.
     val view = LocalView.current
-    DisposableEffect(call.video || call.remoteVideo) {
-        view.keepScreenOn = call.video || call.remoteVideo
+    val anyVideo = call.video || call.remoteVideo || call.members.any { it.video }
+    DisposableEffect(anyVideo) {
+        view.keepScreenOn = anyVideo
         onDispose { view.keepScreenOn = false }
     }
 
@@ -127,7 +139,7 @@ fun CallScreen(call: CallState, answerRequested: Boolean, onAnswerHandled: () ->
                 if (showRemote) controlsVisible = !controlsVisible
             },
     ) {
-        val bigTrack = if (showRemote) remote else local
+        val bigTrack = if (showGrid) null else if (showRemote) remote else local
         bigTrack?.let { track ->
             VideoView(track, calls.eglContext, mirror = track === local && call.frontCamera, modifier = Modifier.fillMaxSize())
         }
@@ -158,17 +170,31 @@ fun CallScreen(call: CallState, answerRequested: Boolean, onAnswerHandled: () ->
                     style = MaterialTheme.typography.labelMedium,
                     color = Color.White.copy(alpha = 0.7f),
                 )
-                Spacer(Modifier.height(if (bigTrack == null) 48.dp else 12.dp))
-                if (bigTrack == null) {
-                    Avatar(name, call.peerId, 120.dp, peer?.avatarId)
+                Spacer(Modifier.height(if (bigTrack == null && !showGrid) 48.dp else 12.dp))
+                if (bigTrack == null && !showGrid) {
+                    Avatar(name, call.peerId, 120.dp, avatarId)
                     Spacer(Modifier.height(20.dp))
                 }
                 Text(name, style = MaterialTheme.typography.headlineSmall, color = Color.White, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(6.dp))
                 val duration = rememberCallDuration(call.connectedAtMillis.takeIf { call.phase == CallPhase.Connected })
-                Text(duration.ifEmpty { statusText(call) }, style = MaterialTheme.typography.bodyLarge, color = Color.White.copy(alpha = 0.8f))
+                val status = if (call.group) groupStatusText(call, people) else statusText(call)
+                Text(
+                    when {
+                        duration.isEmpty() -> status
+                        call.group -> "$duration · $status"
+                        else -> duration
+                    },
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = Color.White.copy(alpha = 0.8f),
+                )
             }
-            Spacer(Modifier.weight(1f))
+            if (showGrid) {
+                val tiles = groupCallTiles(me?.id, me, call.members, people, memberVideo, local, call.frontCamera)
+                GroupCallGrid(tiles, calls.eglContext, Modifier.weight(1f).fillMaxWidth())
+            } else {
+                Spacer(Modifier.weight(1f))
+            }
             if (call.phase == CallPhase.Incoming) {
                 Row(Modifier.fillMaxWidth().padding(horizontal = 48.dp), horizontalArrangement = Arrangement.SpaceBetween) {
                     RoundButton(R.drawable.ic_call_end, "Decline", EndRed, label = "Decline", onClick = calls::decline)
@@ -205,6 +231,22 @@ fun CallScreen(call: CallState, answerRequested: Boolean, onAnswerHandled: () ->
                 }
             }
         }
+    }
+}
+
+/** "Ana is calling", "Calling everyone…", "3 people" and so on. */
+private fun groupStatusText(call: CallState, people: Map<String, User>): String {
+    val first = { id: String? -> people[id]?.displayName?.substringBefore(' ') ?: "Someone" }
+    val joined = call.members.count { it.phase == MemberPhase.Connected }
+    return when (call.phase) {
+        CallPhase.Incoming -> {
+            val kind = if (call.startedAsVideo) "group video call" else "group voice call"
+            "${first(call.callerId)} invites you to a $kind"
+        }
+        CallPhase.Calling, CallPhase.Ringing -> "Calling everyone…"
+        CallPhase.Connecting -> "Connecting…"
+        CallPhase.Connected, CallPhase.Reconnecting -> if (joined == 1) "2 people" else "${joined + 1} people"
+        CallPhase.Ended -> call.endReason ?: "Call ended"
     }
 }
 
@@ -256,7 +298,7 @@ private fun ToggleButton(icon: Int, description: String, on: Boolean, onClick: (
 
 /** Shows a WebRTC video track. */
 @Composable
-private fun VideoView(
+internal fun VideoView(
     track: VideoTrack,
     egl: EglBase.Context,
     mirror: Boolean,

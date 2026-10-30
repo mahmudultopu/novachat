@@ -216,6 +216,14 @@ class ChatRepository(
 
     fun group(id: String): Flow<Group?> = dao.group(id).map { it?.toGroup() }
 
+    suspend fun groupNow(id: String): Group? = dao.groupNow(id)?.toGroup()
+
+    /** Every group we're in, by ID. */
+    val groups: Flow<Map<String, Group>> = dao.groups().map { list -> list.associate { it.id to it.toGroup() } }
+
+    /** Our own user ID while signed in. */
+    val signedInUserId: String? get() = session?.user?.id
+
     /** Status updates from the last 24 hours, oldest first. */
     val statuses: Flow<List<Status>> = dao.statuses().map { list ->
         val now = System.currentTimeMillis()
@@ -1112,6 +1120,7 @@ class ChatRepository(
                 groupMessageId = root.clientId,
                 expireSec = root.expireSec(),
                 timerSec = root.timerSec(),
+                callLog = root.callLog?.let { NovaJson.decodeFromString<CallLog>(it) },
             )
             fanOut(groupId, content, parent = root.clientId)
         } finally {
@@ -1447,7 +1456,7 @@ class ChatRepository(
                     gid != null -> {
                         val allowed = group == null || (
                             !group.left && group.member(dto.senderId) != null &&
-                                (content.isControl || !group.onlyAdminsSend || group.isAdmin(dto.senderId))
+                                (content.isControl || content.callLog != null || !group.onlyAdminsSend || group.isAdmin(dto.senderId))
                             )
                         val inGroup = base.copy(peerId = gid, recipientId = gid, groupId = gid)
                         when {
@@ -1473,6 +1482,7 @@ class ChatRepository(
                                     attachment = content.attachment?.let { NovaJson.encodeToString(it) },
                                     replyTo = content.replyTo?.let { NovaJson.encodeToString(it) },
                                     forwarded = content.forwarded,
+                                    callLog = content.callLog?.let { NovaJson.encodeToString(it) },
                                     expiresAtMillis = expiry(base, content),
                                 ),
                             )

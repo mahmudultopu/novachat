@@ -346,6 +346,22 @@ or off, and flip between cameras. A finished call shows up in the chat as
 * Calls need the native WebRTC library, built only for ARM phones to keep the
   app small. PC emulators with ARM translation still run it.
 
+**Group calls.** The same buttons in a group chat call everyone in the group,
+up to 6 people including you. People who answer show up in a grid with their
+video or photo, and anyone can leave while the others carry on. The call ends
+when the last person leaves.
+
+* Group calls are a mesh: every two people in the call have their own WebRTC
+  connection, set up with the same end-to-end encrypted signals as a
+  one-to-one call (each signal names the group). Whoever joins sends an offer
+  to everyone they aren't connected to yet and answers the offers waiting for
+  them. If two people offer each other at once, the offer from the lower user
+  ID wins.
+* Every phone sends its video to everyone else, so group calls capture smaller
+  video (640×360) and are capped at 6 people.
+* The person who started the call adds "Group voice call · 2:31" to the group
+  chat.
+
 ### Pin, mute and archive
 
 Long-press a chat in the list:
@@ -520,7 +536,8 @@ Following the builder guide, in order:
 8. ~~**Notifications**~~ (done in 0.9.0): quick reply and mark as read, see
    [Notifications](#notifications).
 9. ~~**Voice and video calls**~~ (done in 0.10.0): one-to-one, see
-   [Voice and video calls](#voice-and-video-calls). Group calls come next.
+   [Voice and video calls](#voice-and-video-calls); group calls for up to 6
+   people done in 0.17.0.
 10. **Chat controls**: ~~pin, mute and archive~~ (done in 0.11.0, see
     [Pin, mute and archive](#pin-mute-and-archive)), ~~disappearing
     messages~~ (done in 0.12.0, see [Disappearing messages](#disappearing-messages)),

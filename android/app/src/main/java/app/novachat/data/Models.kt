@@ -269,6 +269,9 @@ data class MessageContent(
  * [type] is "offer" and "answer" (with [sdp], WebRTC's description of the
  * connection including its encryption fingerprint), "ringing", "decline",
  * "busy", "end", or "video" when someone turns their camera on or off.
+ *
+ * In a group call every two people have their own connection, set up with
+ * these same signals sent one-to-one; [group] names the group the call is in.
  */
 @Serializable
 data class CallSignal(
@@ -276,6 +279,7 @@ data class CallSignal(
     val type: String,
     val video: Boolean = false,
     val sdp: String? = null,
+    val group: String? = null,
 )
 
 /** A finished call as a line in the chat. The caller sends it to both phones. */
@@ -285,6 +289,8 @@ data class CallLog(
     /** "answered", "missed" (no answer), "declined" or "busy". */
     val outcome: String,
     @SerialName("duration_s") val durationSec: Int = 0,
+    /** A call in a group chat, with everyone who joined. */
+    val group: Boolean = false,
 ) {
     val missed: Boolean get() = outcome != "answered"
 }
