@@ -399,6 +399,13 @@ class CallManager(
         val s = incoming.signal
         val from = incoming.from
         val st = _state.value
+        if (incoming.elsewhere) {
+            // Picked up, declined or busy on another of your devices: stop ringing here.
+            if (st != null && st.id == s.id && !st.outgoing && st.phase == CallPhase.Incoming && s.type in HANDLED_ELSEWHERE) {
+                finish(st.id, if (s.type == "answer") "Answered on another device" else "Missed call", null)
+            }
+            return
+        }
         if (s.group != null) return onGroupSignal(incoming)
         if (s.type == "offer") {
             // An old offer from a catch-up after being offline: that call is long over.
@@ -740,6 +747,8 @@ class CallManager(
         /** Most people in one group call, counting yourself. Each phone sends its video to everyone else. */
         const val MAX_GROUP_CALL = 6
 
+        /** What you sending from another device means this device should stop ringing. */
+        private val HANDLED_ELSEWHERE = setOf("answer", "decline", "busy")
         private const val RING_TIMEOUT_MS = 45_000L
         private const val RING_GRACE_MS = 5_000L
         private const val CONNECT_TIMEOUT_MS = 30_000L

@@ -11,6 +11,7 @@ import (
 	"github.com/mahmudultopu/novachat/server/internal/calls"
 	"github.com/mahmudultopu/novachat/server/internal/chat"
 	"github.com/mahmudultopu/novachat/server/internal/config"
+	"github.com/mahmudultopu/novachat/server/internal/devices"
 	"github.com/mahmudultopu/novachat/server/internal/groups"
 	"github.com/mahmudultopu/novachat/server/internal/keys"
 	"github.com/mahmudultopu/novachat/server/internal/media"
@@ -41,6 +42,7 @@ func NewHandler(ctx context.Context, cfg config.Config, pool *pgxpool.Pool, rdb 
 	(&media.Handlers{Store: mediaStore, Auth: authH}).Register(mux)
 	keysH.Register(mux)
 	chatH.Register(mux)
+	(&devices.Handlers{Auth: authH, Hub: hub, Redis: rdb}).Register(mux)
 	(&groups.Handlers{DB: pool, Hub: hub, Auth: authH, APKURL: apkURL}).Register(mux)
 	(&calls.Handlers{Auth: authH, Config: calls.Config{
 		STUNURLs:        cfg.STUNURLs,

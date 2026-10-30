@@ -194,8 +194,39 @@ class ApiClient(private val http: OkHttpClient) {
     suspend fun publishKeys(session: Session, keys: PublishKeysRequest): PublishKeysResponse =
         call(session.serverUrl, "PUT", "/v1/keys", session.token, NovaJson.encodeToJsonElement(keys).jsonObject)
 
-    suspend fun keyBundle(session: Session, userId: String): KeyBundleDto =
-        call(session.serverUrl, "GET", "/v1/keys/$userId", session.token, null)
+    /** Someone's devices that can receive messages; 404 when they haven't published keys yet. */
+    suspend fun deviceKeys(session: Session, userId: String): List<DeviceKeyDto> =
+        call<DeviceKeysResponse>(session.serverUrl, "GET", "/v1/keys/$userId", session.token, null).devices
+
+    /** A bundle for starting a session with one device; it uses up one of its one-time prekeys. */
+    suspend fun keyBundle(session: Session, userId: String, deviceId: String): KeyBundleDto =
+        call(session.serverUrl, "GET", "/v1/keys/$userId/$deviceId", session.token, null)
+
+    /** Your phone and the devices linked to it. */
+    suspend fun linkedDevices(session: Session): List<LinkedDevice> =
+        call(session.serverUrl, "GET", "/v1/devices", session.token, null)
+
+    suspend fun removeDevice(session: Session, id: String) {
+        call<Unit>(session.serverUrl, "DELETE", "/v1/devices/$id", session.token, null)
+    }
+
+    /** On your phone: lets the device showing [code] use your account. */
+    suspend fun approveLink(session: Session, code: String): LinkedDevice =
+        call(session.serverUrl, "POST", "/v1/link/approve", session.token, buildJsonObject { put("code", code) })
+
+    /** On a new device: asks for a code to type on the phone. */
+    suspend fun startLink(baseUrl: String, deviceName: String): LinkStart =
+        call(baseUrl, "POST", "/v1/link/start", null, buildJsonObject { put("device_name", deviceName) })
+
+    /** On a new device: null while waiting for the phone, then the new session. */
+    suspend fun pollLink(baseUrl: String, poll: String): VerifyResponse? = withContext(Dispatchers.IO) {
+        val request = try {
+            Request.Builder().url(baseUrl.trimEnd('/') + "/v1/link/$poll").build()
+        } catch (e: IllegalArgumentException) {
+            throw ApiException(0, "bad_server_url", "Server address \"$baseUrl\" is not a valid URL")
+        }
+        execute(request) { if (it.code == 202) null else NovaJson.decodeFromString<VerifyResponse>(it.body!!.string()) }
+    }
 
     /** STUN and TURN servers for setting up a call. */
     suspend fun iceServers(session: Session): IceServersResponse =

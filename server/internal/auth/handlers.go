@@ -134,6 +134,11 @@ func (h *Handlers) signIn(w http.ResponseWriter, r *http.Request, userID, device
 		internalError(w, err)
 		return
 	}
+	// The number moved to this phone: the old phone and its linked devices are signed out.
+	if err := h.Store.DeleteOtherSessions(r.Context(), userID, token); err != nil {
+		internalError(w, err)
+		return
+	}
 	user, err := h.Store.UserFor(r.Context(), userID, userID)
 	if err != nil {
 		internalError(w, err)
@@ -277,7 +282,7 @@ func (h *Handlers) avatar(w http.ResponseWriter, r *http.Request) {
 type ctxKey struct{}
 
 // Require rejects requests without a valid bearer token and puts the
-// caller's user ID in the request context. The token may also be passed as
+// caller's device in the request context. The token may also be passed as
 // ?token= for WebSocket clients that cannot set headers.
 func (h *Handlers) Require(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -286,7 +291,7 @@ func (h *Handlers) Require(next http.Handler) http.Handler {
 			httpx.Error(w, http.StatusUnauthorized, "unauthorized", "missing token")
 			return
 		}
-		id, err := h.Store.UserIDForToken(r.Context(), token)
+		d, err := h.Store.DeviceForToken(r.Context(), token)
 		if errors.Is(err, ErrNotFound) {
 			httpx.Error(w, http.StatusUnauthorized, "unauthorized", "invalid or expired token")
 			return
@@ -295,14 +300,20 @@ func (h *Handlers) Require(next http.Handler) http.Handler {
 			internalError(w, err)
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, id)))
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, d)))
 	})
 }
 
 // UserID returns the signed-in user set by Require.
-func UserID(ctx context.Context) string {
-	id, _ := ctx.Value(ctxKey{}).(string)
-	return id
+func UserID(ctx context.Context) string { return CurrentDevice(ctx).UserID }
+
+// DeviceID returns the device (session) the request came from.
+func DeviceID(ctx context.Context) string { return CurrentDevice(ctx).ID }
+
+// CurrentDevice returns the caller's device set by Require.
+func CurrentDevice(ctx context.Context) Device {
+	d, _ := ctx.Value(ctxKey{}).(Device)
+	return d
 }
 
 // BearerToken returns the token the request was authenticated with.

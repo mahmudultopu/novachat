@@ -3,6 +3,7 @@ package chat
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -14,15 +15,18 @@ import (
 )
 
 type Message struct {
-	ID          int64      `json:"id"`
-	ClientID    string     `json:"client_id"`
-	SenderID    string     `json:"sender_id"`
-	RecipientID string     `json:"recipient_id"`
-	Body        string     `json:"body"`
-	Envelope    *string    `json:"envelope,omitempty"` // end-to-end encrypted content
-	CreatedAt   time.Time  `json:"created_at"`
-	DeliveredAt *time.Time `json:"delivered_at"`
-	ReadAt      *time.Time `json:"read_at"`
+	ID          int64   `json:"id"`
+	ClientID    string  `json:"client_id"`
+	SenderID    string  `json:"sender_id"`
+	RecipientID string  `json:"recipient_id"`
+	Body        string  `json:"body"`
+	Envelope    *string `json:"envelope,omitempty"` // encrypted content from before linked devices
+	// SenderDevice sent it; Envelopes holds its content encrypted for each device.
+	SenderDevice *string           `json:"sender_device,omitempty"`
+	Envelopes    map[string]string `json:"envelopes,omitempty"`
+	CreatedAt    time.Time         `json:"created_at"`
+	DeliveredAt  *time.Time        `json:"delivered_at"`
+	ReadAt       *time.Time        `json:"read_at"`
 	// GroupID marks a group event written by the server; Body is its JSON.
 	GroupID *string `json:"group_id,omitempty"`
 }
@@ -39,11 +43,15 @@ type Store struct {
 	DB *pgxpool.Pool
 }
 
-const msgCols = `id, client_id::text, sender_id::text, recipient_id::text, body, envelope, created_at, delivered_at, read_at, group_id::text`
+const msgCols = `id, client_id::text, sender_id::text, recipient_id::text, body, envelope, created_at, delivered_at, read_at, group_id::text, sender_device::text, envelopes`
 
 func scanMessage(row pgx.Row) (Message, error) {
 	var m Message
-	err := row.Scan(&m.ID, &m.ClientID, &m.SenderID, &m.RecipientID, &m.Body, &m.Envelope, &m.CreatedAt, &m.DeliveredAt, &m.ReadAt, &m.GroupID)
+	var envs []byte
+	err := row.Scan(&m.ID, &m.ClientID, &m.SenderID, &m.RecipientID, &m.Body, &m.Envelope, &m.CreatedAt, &m.DeliveredAt, &m.ReadAt, &m.GroupID, &m.SenderDevice, &envs)
+	if err == nil && envs != nil {
+		err = json.Unmarshal(envs, &m.Envelopes)
+	}
 	return m, err
 }
 
@@ -63,15 +71,24 @@ func collectMessages(rows pgx.Rows, err error) ([]Message, error) {
 	return out, rows.Err()
 }
 
-// Insert stores a message: either a plain body or an end-to-end encrypted
-// envelope. Sending the same client_id twice (a retry after a dropped
-// connection) returns the original message with inserted=false.
-func (s *Store) Insert(ctx context.Context, senderID, clientID, recipientID, body string, envelope *string) (Message, bool, error) {
+// Insert stores a message: either a plain body or end-to-end encrypted
+// envelopes, one per device. Sending the same client_id twice (a retry after
+// a dropped connection) returns the original message with inserted=false.
+func (s *Store) Insert(ctx context.Context, senderID, senderDevice, clientID, recipientID, body string, envelopes map[string]string) (Message, bool, error) {
+	var envs *string
+	if envelopes != nil {
+		b, err := json.Marshal(envelopes)
+		if err != nil {
+			return Message{}, false, err
+		}
+		v := string(b)
+		envs = &v
+	}
 	m, err := scanMessage(s.DB.QueryRow(ctx, `
-		INSERT INTO messages (client_id, sender_id, recipient_id, body, envelope)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO messages (client_id, sender_id, sender_device, recipient_id, body, envelopes)
+		VALUES ($1, $2, $3, $4, $5, $6::jsonb)
 		ON CONFLICT (sender_id, client_id) DO NOTHING
-		RETURNING `+msgCols, clientID, senderID, recipientID, body, envelope))
+		RETURNING `+msgCols, clientID, senderID, senderDevice, recipientID, body, envs))
 	if err == nil {
 		return m, true, nil
 	}
@@ -118,12 +135,14 @@ func (s *Store) MarkReceipts(ctx context.Context, recipientID string, ids []int6
 }
 
 // Sync returns messages to or from userID with an id above after, oldest
-// first. The app calls it after every reconnect to catch up.
-func (s *Store) Sync(ctx context.Context, userID string, after int64, limit int) ([]Message, error) {
+// first. The app calls it after every reconnect to catch up. A linked
+// device starts at the messages sent after it was linked.
+func (s *Store) Sync(ctx context.Context, userID, deviceID string, after int64, limit int) ([]Message, error) {
 	return collectMessages(s.DB.Query(ctx, `
 		SELECT `+msgCols+` FROM messages
-		WHERE (recipient_id = $1 OR (sender_id = $1 AND group_id IS NULL)) AND id > $2
-		ORDER BY id LIMIT $3`, userID, after, limit))
+		WHERE (recipient_id = $1 OR (sender_id = $1 AND group_id IS NULL))
+		  AND id > GREATEST($2, (SELECT first_message_id FROM sessions WHERE id = $3))
+		ORDER BY id LIMIT $4`, userID, after, deviceID, limit))
 }
 
 // History returns up to limit messages between two users older than before,

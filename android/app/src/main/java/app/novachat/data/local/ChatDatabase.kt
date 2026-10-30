@@ -50,9 +50,9 @@ data class MessageEntity(
     val deliveredAt: String?,
     val readAt: String?,
     val failed: Boolean,
-    /** Outgoing only: the encrypted envelope, kept so a resend is identical. */
+    /** Outgoing only: the encrypted envelopes (one per device, as JSON), kept so a resend is identical. */
     val envelope: String? = null,
-    /** Outgoing only: the recipient identity key [envelope] was encrypted to. */
+    /** Outgoing only: "devices" once [envelope] holds one envelope per device. */
     val envelopeKey: String? = null,
     /** Incoming message this phone could not decrypt. */
     @ColumnInfo(defaultValue = "0") val undecryptable: Boolean = false,
@@ -292,12 +292,12 @@ abstract class ChatDao {
     @Query("SELECT DISTINCT parentClientId FROM messages WHERE id IN (:ids) AND parentClientId IS NOT NULL")
     abstract suspend fun parentsOf(ids: List<Long>): List<String>
 
-    /** A group message is delivered (read) once every member's copy is. */
+    /** A group message is delivered (read) once every member's copy is; the copy for your own devices doesn't count. */
     @Query(
         """UPDATE messages SET
-             deliveredAt = CASE WHEN NOT EXISTS (SELECT 1 FROM messages AS f WHERE f.senderId = :me
+             deliveredAt = CASE WHEN NOT EXISTS (SELECT 1 FROM messages AS f WHERE f.senderId = :me AND f.recipientId != :me
                AND f.parentClientId = :parent AND f.deliveredAt IS NULL) THEN COALESCE(deliveredAt, :at) ELSE deliveredAt END,
-             readAt = CASE WHEN NOT EXISTS (SELECT 1 FROM messages AS f WHERE f.senderId = :me
+             readAt = CASE WHEN NOT EXISTS (SELECT 1 FROM messages AS f WHERE f.senderId = :me AND f.recipientId != :me
                AND f.parentClientId = :parent AND f.readAt IS NULL) THEN COALESCE(readAt, :at) ELSE readAt END
            WHERE senderId = :me AND clientId = :parent""",
     )

@@ -122,26 +122,54 @@ func (s *Store) TouchLastSeen(ctx context.Context, userID string) error {
 // CreateSession issues a new random bearer token for a device. Only the
 // token's hash is stored.
 func (s *Store) CreateSession(ctx context.Context, userID, deviceName string) (string, error) {
-	raw := make([]byte, 32)
-	if _, err := rand.Read(raw); err != nil {
+	token, err := newToken()
+	if err != nil {
 		return "", err
 	}
-	token := base64.RawURLEncoding.EncodeToString(raw)
-	_, err := s.DB.Exec(ctx, `INSERT INTO sessions (token_hash, user_id, device_name) VALUES ($1, $2, $3)`,
+	_, err = s.DB.Exec(ctx, `INSERT INTO sessions (token_hash, user_id, device_name) VALUES ($1, $2, $3)`,
 		hashToken(token), userID, deviceName)
 	return token, err
 }
 
-// UserIDForToken resolves a bearer token to its user and bumps last_seen_at.
-func (s *Store) UserIDForToken(ctx context.Context, token string) (string, error) {
-	var id string
+// CreateLinkedSession signs in a device linked from the user's phone. It
+// gets messages from now on; older ones were never encrypted for it.
+func (s *Store) CreateLinkedSession(ctx context.Context, userID, deviceName string) (token, deviceID string, err error) {
+	token, err = newToken()
+	if err != nil {
+		return "", "", err
+	}
+	err = s.DB.QueryRow(ctx, `
+		INSERT INTO sessions (token_hash, user_id, device_name, linked, first_message_id)
+		VALUES ($1, $2, $3, true, (SELECT COALESCE(max(id), 0) FROM messages))
+		RETURNING id::text`, hashToken(token), userID, deviceName).Scan(&deviceID)
+	return token, deviceID, err
+}
+
+func newToken() (string, error) {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(raw), nil
+}
+
+// Device is who is calling: the user and which of their devices.
+type Device struct {
+	UserID string
+	ID     string
+	Linked bool
+}
+
+// DeviceForToken resolves a bearer token to its device and bumps last_seen_at.
+func (s *Store) DeviceForToken(ctx context.Context, token string) (Device, error) {
+	var d Device
 	err := s.DB.QueryRow(ctx, `
 		UPDATE sessions SET last_seen_at = now() WHERE token_hash = $1
-		RETURNING user_id::text`, hashToken(token)).Scan(&id)
+		RETURNING user_id::text, id::text, linked`, hashToken(token)).Scan(&d.UserID, &d.ID, &d.Linked)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", ErrNotFound
+		return d, ErrNotFound
 	}
-	return id, err
+	return d, err
 }
 
 func (s *Store) DeleteSession(ctx context.Context, token string) error {
@@ -150,11 +178,59 @@ func (s *Store) DeleteSession(ctx context.Context, token string) error {
 }
 
 // DeleteOtherSessions signs userID out everywhere except the device holding
-// keepToken. NovaChat is one phone per account (like a SIM): a phone that
-// publishes new encryption keys takes the account over.
+// keepToken. NovaChat is one phone per account (like a SIM): signing in on a
+// new phone takes the account over, and the old phone's linked devices go too.
 func (s *Store) DeleteOtherSessions(ctx context.Context, userID, keepToken string) error {
 	_, err := s.DB.Exec(ctx, `DELETE FROM sessions WHERE user_id = $1 AND token_hash <> $2`, userID, hashToken(keepToken))
 	return err
+}
+
+// SessionInfo is one signed-in device, as listed under Linked devices.
+type SessionInfo struct {
+	ID         string    `json:"id"`
+	Name       string    `json:"name"`
+	Linked     bool      `json:"linked"`
+	CreatedAt  time.Time `json:"created_at"`
+	LastSeenAt time.Time `json:"last_seen_at"`
+	Current    bool      `json:"current"`
+}
+
+// Sessions lists the user's devices: the phone first, then linked ones, oldest first.
+func (s *Store) Sessions(ctx context.Context, userID, currentID string) ([]SessionInfo, error) {
+	rows, err := s.DB.Query(ctx, `
+		SELECT id::text, device_name, linked, created_at, last_seen_at FROM sessions
+		WHERE user_id = $1 ORDER BY linked, created_at`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []SessionInfo{}
+	for rows.Next() {
+		var d SessionInfo
+		if err := rows.Scan(&d.ID, &d.Name, &d.Linked, &d.CreatedAt, &d.LastSeenAt); err != nil {
+			return nil, err
+		}
+		d.Current = d.ID == currentID
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+// CountLinked returns how many linked devices the user has.
+func (s *Store) CountLinked(ctx context.Context, userID string) (int, error) {
+	var n int
+	err := s.DB.QueryRow(ctx, `SELECT count(*) FROM sessions WHERE user_id = $1 AND linked`, userID).Scan(&n)
+	return n, err
+}
+
+// DeleteDevice signs one of the user's devices out. It reports false when
+// the user has no such device.
+func (s *Store) DeleteDevice(ctx context.Context, userID, deviceID string) (bool, error) {
+	if !IsUUID(deviceID) {
+		return false, nil
+	}
+	tag, err := s.DB.Exec(ctx, `DELETE FROM sessions WHERE user_id = $1 AND id = $2`, userID, deviceID)
+	return tag.RowsAffected() > 0, err
 }
 
 func hashToken(token string) []byte {

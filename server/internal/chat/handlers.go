@@ -55,7 +55,7 @@ func (h *Handlers) sync(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	after := queryInt(q.Get("after"), 0)
 	limit := clamp(queryInt(q.Get("limit"), 500), 1, 1000)
-	msgs, err := h.Store.Sync(r.Context(), auth.UserID(r.Context()), after, int(limit))
+	msgs, err := h.Store.Sync(r.Context(), auth.UserID(r.Context()), auth.DeviceID(r.Context()), after, int(limit))
 	if err != nil {
 		internalError(w, err)
 		return

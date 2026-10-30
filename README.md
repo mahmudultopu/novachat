@@ -176,26 +176,33 @@ the plans in Render when you need it always on.
 Every message is encrypted on the sender's phone and decrypted on the
 recipient's phone, using the same design as Signal (and WhatsApp):
 
-* **Keys** (`android/.../crypto`): each install creates an identity key pair
+* **Keys** (`android/.../crypto`): each install (each device) creates an identity key pair
   (X25519 for key agreement, Ed25519 for signing), a signed prekey that is
   replaced weekly, and batches of 100 one-time prekeys. Private keys never
   leave the phone; they are stored in the chat database sealed with an AES key
   held in the Android Keystore (`data/Vault.kt`).
-* **Key directory** (`server/internal/keys`): phones publish public keys with
-  `PUT /v1/keys`; `GET /v1/keys/{user}` hands out one bundle and deletes the
-  one-time prekey it used. The server checks the prekey signature.
+* **Key directory** (`server/internal/keys`): every device publishes its public
+  keys with `PUT /v1/keys`. `GET /v1/keys/{user}` lists someone's devices with
+  their identity keys, and `GET /v1/keys/{user}/{device}` hands out one
+  device's bundle and deletes the one-time prekey it used. The server checks
+  the prekey signature.
 * **Sessions**: the first message runs X3DH to agree on a secret, then a Double
   Ratchet session gives every message its own key (forward secrecy) and heals
   after a key leak (post-compromise security). Lost, delayed and reordered
   messages still decrypt; tampered ones are rejected.
-* **What the server sees**: who talks to whom and when, plus an opaque
-  `envelope`. It cannot read message text.
+* **One envelope per device**: a message is encrypted separately for each of
+  the recipient's devices and for your own other devices, over a session per
+  device. The server checks the set is complete and current; if someone linked,
+  removed or reinstalled a device it answers `devices_changed`, and the app
+  looks the devices up again and re-encrypts.
+* **What the server sees**: who talks to whom and when, plus opaque
+  `envelopes`. It cannot read message text.
 * **Verify**: tap the lock notice at the top of a chat to see the 60-digit
-  safety number. If it matches on both phones, nobody is intercepting.
-* **One phone per account**: like WhatsApp, signing in on a new phone
-  publishes new keys and signs the old phone out. Messages sent to the old
-  keys cannot be read on the new phone. The sender's app notices the key change
-  (`stale_identity`), sets up a new session and resends automatically.
+  safety number. It covers every device's key, so it changes when either of
+  you links a device. If it matches on both phones, nobody is intercepting.
+* **One phone per account**: like WhatsApp, signing in with the SMS code on a
+  new phone signs the old phone (and its linked devices) out. Messages sent to
+  the old keys cannot be read on the new phone; restore a chat backup for those.
 
 The crypto core has unit tests (`android/app/src/test`): two simulated phones,
 lost and shuffled messages, tampering, replay, both people starting at once,
@@ -463,6 +470,24 @@ changed it. In a group, only people who may edit the group info can change it.
   videos keep their keys, so they download again while the server has them.
 * A backup only restores into the account that made it.
 
+### Linked devices
+
+* Use one account on up to 4 more devices, like a tablet or a second phone.
+  On the new device, tap **Link this device** on the sign-in screen; it shows
+  an 8-digit code. On your phone, go to **Settings → Linked devices → Link a
+  device** and type it. No SMS needed.
+* Each linked device has its own keys and gets every new message, including
+  ones you send from your other devices. Reading a chat on one marks it read
+  on all. Calls ring everywhere; answering on one stops the others ringing.
+* Messages from before linking stay where they were (restore a chat backup to
+  bring them over). Group messages reach your other devices through one extra
+  copy addressed to yourself. Status updates stay on the device that posted.
+* Remove a linked device from the list on your phone; it's signed out at once.
+* Under the hood: `POST /v1/link/start` gives the new device a code and a
+  secret to poll `GET /v1/link/{poll}` with. `POST /v1/link/approve {code}`
+  from the phone creates the session and the next poll hands over its token.
+  Codes last 5 minutes, work once, and a phone may try 10 per 10 minutes.
+
 ### API
 
 | Method and path | Auth | Purpose |
@@ -485,7 +510,11 @@ changed it. In a group, only people who may edit the group info can change it.
 | `GET /v1/messages?peer=&before=&limit=` | Bearer | Older messages in one chat |
 | `GET /v1/sync?after=&limit=` | Bearer | Everything since a message id |
 | `PUT /v1/keys` | Bearer | Publish identity, signed prekey and one-time prekeys |
-| `GET /v1/keys/{id}` | Bearer | Claim someone's prekey bundle to start encryption |
+| `GET /v1/keys/{id}` | Bearer | Someone's devices and their identity keys |
+| `GET /v1/keys/{id}/{device}` | Bearer | Claim one device's prekey bundle to start encryption |
+| `GET /v1/devices`, `DELETE /v1/devices/{id}` | Bearer | Your devices; remove a linked one |
+| `POST /v1/link/start` `{device_name}`, `GET /v1/link/{poll}` | – | A new device asks for a link code and waits |
+| `POST /v1/link/approve` `{code}` | Bearer (phone) | Link the device showing this code |
 | `POST /v1/attachments` (raw bytes) | Bearer | Upload an encrypted file, returns `{id}` |
 | `GET /v1/attachments/{id}` | Bearer | Download an encrypted file |
 | `POST /v1/groups` `{name, members}`, `GET /v1/groups` | Bearer | Create a group, list yours |
@@ -505,7 +534,7 @@ changed it. In a group, only people who may edit the group info can change it.
 App to server:
 
 ```json
-{"type": "send", "client_id": "<uuid>", "to": "<user id>", "envelope": "<encrypted>", "identity_key": "<their identity key, base64>"}
+{"type": "send", "client_id": "<uuid>", "to": "<user id>", "envelopes": {"<device id>": {"envelope": "<encrypted>", "identity_key": "<that device's identity key, base64>"}}}
 {"type": "receipt", "status": "delivered", "message_ids": [42, 43]}
 {"type": "receipt", "status": "read", "message_ids": [42, 43]}
 {"type": "typing", "to": "<user id>"}
@@ -516,8 +545,8 @@ App to server:
 Server to app:
 
 ```json
-{"type": "ready", "user_id": "<your id>"}
-{"type": "message", "message": {"id": 42, "client_id": "...", "sender_id": "...", "recipient_id": "...", "body": "Hello", "created_at": "...", "delivered_at": null, "read_at": null}}
+{"type": "ready", "user_id": "<your id>", "device_id": "<this device>"}
+{"type": "message", "message": {"id": 42, "client_id": "...", "sender_id": "...", "sender_device": "...", "recipient_id": "...", "envelopes": {"<device id>": "<encrypted>"}, "created_at": "...", "delivered_at": null, "read_at": null}}
 {"type": "receipt", "status": "read", "message_ids": [42], "at": "...", "from": "<reader id>"}
 {"type": "typing", "from": "<user id>"}
 {"type": "presence", "user_id": "<user id>", "online": false, "last_seen_at": "..."}
@@ -579,5 +608,6 @@ Following the builder guide, in order:
     0.16.0, see [Contacts](#contacts)).
 12. **Account safety**: ~~two-step verification~~ (done in 0.18.0, see
     [Two-step verification](#two-step-verification)), ~~chat backup~~ (done
-    in 0.19.0, see [Chat backup](#chat-backup)); linked devices next.
+    in 0.19.0, see [Chat backup](#chat-backup)), ~~linked devices~~ (done in
+    0.21.0, see [Linked devices](#linked-devices)).
 13. A real **SMS provider** for production sign-up, and deployment.
