@@ -382,6 +382,15 @@ changed it. In a group, only people who may edit the group info can change it.
 * Search runs only on the phone: the server holds encrypted envelopes it
   can't read, so there is nothing to search there.
 
+### Theme and wallpaper
+
+* **Settings → Theme and wallpaper** picks light, dark or the phone's
+  setting, one of five app colours, and the wallpaper for every chat.
+* A chat's info has its own **Wallpaper** row, to give just that chat a
+  different one. Wallpapers are soft gradients with a faint dot pattern and
+  have a light and a dark version.
+* All of this stays on the phone; nobody else sees it.
+
 ### Block, report and privacy
 
 * **Settings → Privacy** sets who sees your last seen and online, profile
@@ -505,6 +514,7 @@ Following the builder guide, in order:
     messages~~ (done in 0.12.0, see [Disappearing messages](#disappearing-messages)),
     ~~block, report and privacy settings~~ (done in 0.13.0, see
     [Block, report and privacy](#block-report-and-privacy)).
-11. **Find and personalise**: ~~search~~ (done in 0.14.0, see [Search](#search));
-    wallpapers, themes and contacts next.
+11. **Find and personalise**: ~~search~~ (done in 0.14.0, see [Search](#search)),
+    ~~wallpapers and themes~~ (done in 0.15.0, see
+    [Theme and wallpaper](#theme-and-wallpaper)); contacts next.
 12. A real **SMS provider** for production sign-up, and deployment.

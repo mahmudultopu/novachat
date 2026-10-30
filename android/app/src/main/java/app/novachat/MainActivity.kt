@@ -1,10 +1,12 @@
 package app.novachat
 
 import android.content.Intent
+import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.LaunchedEffect
@@ -15,6 +17,7 @@ import androidx.compose.runtime.setValue
 import app.novachat.notify.Notifier
 import app.novachat.ui.NovaChatRoot
 import app.novachat.ui.theme.NovaChatTheme
+import app.novachat.ui.theme.isAppDark
 
 class MainActivity : ComponentActivity() {
     /** An invite link the app was opened with, until it is shown. */
@@ -36,7 +39,19 @@ class MainActivity : ComponentActivity() {
             // Calls show over the lock screen; nothing else does.
             val call by container.calls.state.collectAsState()
             LaunchedEffect(call == null) { if (call == null) showOverLockScreen(false) else showOverLockScreen(true) }
-            NovaChatTheme {
+            val mode by container.appearance.mode.collectAsState()
+            val accent by container.appearance.accent.collectAsState()
+            NovaChatTheme(mode, accent) {
+                // Status bar icons follow the app's theme, which may differ from the phone's.
+                val dark = isAppDark()
+                LaunchedEffect(dark) {
+                    val style = if (dark) {
+                        SystemBarStyle.dark(Color.TRANSPARENT)
+                    } else {
+                        SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT)
+                    }
+                    enableEdgeToEdge(style, style)
+                }
                 NovaChatRoot(
                     inviteLink = inviteLink,
                     onInviteShown = { inviteLink = null },

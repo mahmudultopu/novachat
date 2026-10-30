@@ -15,6 +15,7 @@ import app.novachat.data.Session
 import app.novachat.data.SessionStore
 import app.novachat.data.Vault
 import app.novachat.data.local.ChatDatabase
+import app.novachat.ui.theme.AppearanceStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -66,6 +67,7 @@ class AppContainer(app: Application) {
     val calls = CallManager(app, chats, notifier, scope)
 
     private val prefs = app.getSharedPreferences("settings", Context.MODE_PRIVATE)
+    val appearance = AppearanceStore(prefs)
     private val _backgroundConnection = MutableStateFlow(prefs.getBoolean(KEY_BACKGROUND, true))
     /** Stay connected while the app is closed, so messages notify right away. */
     val backgroundConnection: StateFlow<Boolean> = _backgroundConnection
