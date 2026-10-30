@@ -1,6 +1,10 @@
 package app.novachat.ui.auth
 
 import androidx.compose.foundation.Image
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -77,8 +81,21 @@ fun AuthFlow() {
                 IconButton(onClick = { editServer = true }) { Icon(Icons.Filled.Settings, "Server address") }
             }
             Spacer(Modifier.height(24.dp))
-            Image(painterResource(R.drawable.ic_logo), null, Modifier.size(72.dp).align(Alignment.CenterHorizontally))
-            Spacer(Modifier.height(16.dp))
+            // The logo sits on a soft brand-coloured glow.
+            Box(
+                Modifier
+                    .size(160.dp)
+                    .align(Alignment.CenterHorizontally)
+                    .background(
+                        Brush.radialGradient(
+                            listOf(MaterialTheme.colorScheme.primary.copy(alpha = 0.22f), Color.Transparent),
+                        ),
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                Image(painterResource(R.drawable.ic_logo), null, Modifier.size(92.dp))
+            }
+            Spacer(Modifier.height(4.dp))
 
             when (state.step) {
                 AuthUiState.Step.Phone -> PhoneStep(state, vm)
@@ -98,7 +115,7 @@ fun AuthFlow() {
 
 @Composable
 private fun PhoneStep(state: AuthUiState, vm: AuthViewModel) {
-    Text("Welcome to NovaChat", style = MaterialTheme.typography.titleLarge, modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
+    Text("Welcome to NovaChat", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
     Spacer(Modifier.height(8.dp))
     Text(
         "Enter your phone number. We'll send a 6-digit code to confirm it's you.",
@@ -281,8 +298,8 @@ private fun PrimaryButton(text: String, enabled: Boolean, loading: Boolean, onCl
     Button(
         onClick = onClick,
         enabled = enabled && !loading,
-        shape = RoundedCornerShape(16.dp),
-        modifier = Modifier.fillMaxWidth().height(52.dp),
+        shape = RoundedCornerShape(18.dp),
+        modifier = Modifier.fillMaxWidth().height(56.dp),
     ) {
         if (loading) {
             CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)

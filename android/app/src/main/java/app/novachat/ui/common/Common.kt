@@ -22,6 +22,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -41,9 +42,12 @@ import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 import kotlin.math.absoluteValue
 
+// Each pair is a soft diagonal gradient, light corner first.
 private val avatarPalette = listOf(
-    Color(0xFF5B3DF5), Color(0xFF19A99B), Color(0xFFE2577B), Color(0xFFF29B38),
-    Color(0xFF3C8DEB), Color(0xFF9A4DD8), Color(0xFF2FA35A), Color(0xFFD1494A),
+    Color(0xFF8A6CFF) to Color(0xFF4B2FE0), Color(0xFF3FD5C3) to Color(0xFF0E8F80),
+    Color(0xFFFF7EA0) to Color(0xFFD23C68), Color(0xFFFFB86B) to Color(0xFFE5782A),
+    Color(0xFF6AB0FF) to Color(0xFF2867D8), Color(0xFFC07BFF) to Color(0xFF7E35C9),
+    Color(0xFF5FD38A) to Color(0xFF218F4C), Color(0xFFFF8A7A) to Color(0xFFC93A3C),
 )
 
 /**
@@ -63,7 +67,7 @@ fun Avatar(name: String, id: String, size: Dp = 48.dp, photoId: String? = null) 
         modifier = Modifier
             .size(size)
             .clip(CircleShape)
-            .background(avatarPalette[id.hashCode().absoluteValue % avatarPalette.size]),
+            .background(avatarPalette[id.hashCode().absoluteValue % avatarPalette.size].let { Brush.linearGradient(listOf(it.first, it.second)) }),
         contentAlignment = Alignment.Center,
     ) {
         val bitmap = photo

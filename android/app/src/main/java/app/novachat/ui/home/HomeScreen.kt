@@ -1,7 +1,13 @@
 package app.novachat.ui.home
 
 import app.novachat.data.MessageRef
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Settings
@@ -55,28 +61,40 @@ fun HomeScreen(
     var selected by rememberSaveable { mutableIntStateOf(0) }
     Scaffold(
         bottomBar = {
-            NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
-                tabs.forEachIndexed { i, tab ->
-                    NavigationBarItem(
-                        selected = selected == i,
-                        onClick = { selected = i },
-                        icon = { Icon(tab.icon(), null) },
-                        label = { Text(tab.label) },
-                        colors = NavigationBarItemDefaults.colors(
-                            indicatorColor = MaterialTheme.colorScheme.primaryContainer,
-                        ),
-                    )
+            Column {
+                HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
+                NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp) {
+                    tabs.forEachIndexed { i, tab ->
+                        NavigationBarItem(
+                            selected = selected == i,
+                            onClick = { selected = i },
+                            icon = { Icon(tab.icon(), null) },
+                            label = {
+                                Text(tab.label, fontWeight = if (selected == i) FontWeight.Bold else FontWeight.Medium)
+                            },
+                            colors = NavigationBarItemDefaults.colors(
+                                selectedIconColor = MaterialTheme.colorScheme.primary,
+                                selectedTextColor = MaterialTheme.colorScheme.primary,
+                                indicatorColor = MaterialTheme.colorScheme.primaryContainer,
+                                unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            ),
+                        )
+                    }
                 }
             }
         },
         contentWindowInsets = androidx.compose.foundation.layout.WindowInsets(0),
     ) { padding ->
         val modifier = Modifier.padding(padding)
-        when (selected) {
-            0 -> ChatsScreen(openChat = openChat, openMessage = openMessage, openNewChat = openNewChat, openNewGroup = openNewGroup, openJoin = openJoin, modifier = modifier)
-            1 -> StatusScreen(openViewer = openStatus, openTextComposer = openTextStatus, modifier = modifier)
-            2 -> CallsScreen(openChat = openChat, modifier = modifier)
-            else -> SettingsScreen(openProfile = openProfile, openStarred = openStarred, openPrivacy = openPrivacy, openAppearance = openAppearance, openBackup = openBackup, modifier = modifier)
+        // A quick fade between tabs instead of a hard cut.
+        Crossfade(selected, animationSpec = tween(220), label = "tab") { tab ->
+            when (tab) {
+                0 -> ChatsScreen(openChat = openChat, openMessage = openMessage, openNewChat = openNewChat, openNewGroup = openNewGroup, openJoin = openJoin, modifier = modifier)
+                1 -> StatusScreen(openViewer = openStatus, openTextComposer = openTextStatus, modifier = modifier)
+                2 -> CallsScreen(openChat = openChat, modifier = modifier)
+                else -> SettingsScreen(openProfile = openProfile, openStarred = openStarred, openPrivacy = openPrivacy, openAppearance = openAppearance, openBackup = openBackup, modifier = modifier)
+            }
         }
     }
 }

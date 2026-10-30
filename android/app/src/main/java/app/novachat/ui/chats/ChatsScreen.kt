@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.ui.text.ExperimentalTextApi::class)
+
 package app.novachat.ui.chats
 
 import androidx.activity.compose.BackHandler
@@ -27,9 +29,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Badge
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -62,12 +62,23 @@ import app.novachat.ui.chat.previewText
 import app.novachat.ui.chat.systemText
 import app.novachat.R
 import app.novachat.data.User
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.material3.LocalContentColor
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.draw.shadow
+import app.novachat.ui.theme.LocalBubbleColors
+import app.novachat.ui.theme.NovaBrandBrush
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.res.painterResource
@@ -132,12 +143,17 @@ fun ChatsScreen(
             } else TopAppBar(
                 title = {
                     Column {
-                        Text("NovaChat", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.primary)
-                        if (connection != ConnectionState.Connected) {
-                            Text("Connecting…", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("NovaChat", style = MaterialTheme.typography.headlineSmall.copy(brush = NovaBrandBrush, fontWeight = FontWeight.ExtraBold))
+                        AnimatedVisibility(connection != ConnectionState.Connected) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(Modifier.size(6.dp).clip(CircleShape).background(Color(0xFFF2A93B)))
+                                Spacer(Modifier.width(6.dp))
+                                Text("Connecting…", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
                         }
                     }
                 },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
                 actions = {
                     if (conversations.isNotEmpty()) {
                         IconButton(onClick = { searching = true }) { Icon(Icons.Filled.Search, "Search") }
@@ -146,14 +162,10 @@ fun ChatsScreen(
             )
         },
         floatingActionButton = {
-            FloatingActionButton(
-                onClick = { showMenu = true },
-                containerColor = MaterialTheme.colorScheme.primary,
-                contentColor = MaterialTheme.colorScheme.onPrimary,
-                shape = RoundedCornerShape(20.dp),
-            ) { Icon(Icons.Filled.Add, "New chat") }
+            GradientFab(onClick = { showMenu = true }) { Icon(Icons.Filled.Add, "New chat") }
         },
         snackbarHost = { SnackbarHost(snackbar) },
+        containerColor = MaterialTheme.colorScheme.background,
     ) { padding ->
         if (conversations.isEmpty()) {
             Column(
@@ -161,7 +173,9 @@ fun ChatsScreen(
                 verticalArrangement = Arrangement.Center,
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                Text("No chats yet", style = MaterialTheme.typography.titleMedium)
+                Image(painterResource(R.drawable.ic_logo), null, Modifier.size(88.dp))
+                Spacer(Modifier.height(20.dp))
+                Text("No chats yet", style = MaterialTheme.typography.headlineSmall)
                 Spacer(Modifier.height(8.dp))
                 Text(
                     "Tap + to message a friend by phone number, or to start a group.",
@@ -170,7 +184,7 @@ fun ChatsScreen(
                 )
             }
         } else {
-            LazyColumn(Modifier.fillMaxSize().padding(padding)) {
+            LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(bottom = 88.dp)) {
                 if (showArchived) {
                     item {
                         Text(
@@ -187,7 +201,7 @@ fun ChatsScreen(
                     }
                 }
                 items(shown, key = { it.peer.id }) { c ->
-                    ConversationRow(c, myId, people, onLongClick = { actionsFor = c }) { openChat(c.peer.id) }
+                    ConversationRow(c, myId, people, Modifier.animateItem(), onLongClick = { actionsFor = c }) { openChat(c.peer.id) }
                 }
             }
         }
@@ -218,6 +232,24 @@ fun ChatsScreen(
         })
     }
 
+}
+
+/** The round-cornered "new chat" button, filled with the accent's gradient and a soft coloured glow. */
+@Composable
+private fun GradientFab(onClick: () -> Unit, content: @Composable () -> Unit) {
+    val bubbles = LocalBubbleColors.current
+    val shape = RoundedCornerShape(20.dp)
+    Box(
+        Modifier
+            .size(60.dp)
+            .shadow(14.dp, shape, ambientColor = bubbles.mine, spotColor = bubbles.mine)
+            .clip(shape)
+            .background(bubbles.mineBrush)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        CompositionLocalProvider(LocalContentColor provides bubbles.onMine, content = content)
+    }
 }
 
 @Composable
@@ -261,14 +293,18 @@ private fun ConversationRow(
     c: Conversation,
     myId: String?,
     people: Map<String, User>,
+    modifier: Modifier,
     onLongClick: () -> Unit,
     onClick: () -> Unit,
 ) {
+    val unread = c.unread > 0
     Row(
-        Modifier
+        modifier
             .fillMaxWidth()
+            .padding(horizontal = 8.dp)
+            .clip(MaterialTheme.shapes.medium)
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            .padding(horizontal = 8.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Avatar(c.peer.displayName, c.peer.id, 52.dp, c.peer.avatarId)
@@ -278,6 +314,7 @@ private fun ConversationRow(
                 Text(
                     c.peer.displayName,
                     style = MaterialTheme.typography.titleMedium,
+                    fontWeight = if (unread) FontWeight.Bold else FontWeight.SemiBold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
@@ -306,7 +343,8 @@ private fun ConversationRow(
                         else -> previewText(c.lastMessage)
                     },
                     style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = if (unread) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontWeight = if (unread) FontWeight.Medium else FontWeight.Normal,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
@@ -318,13 +356,22 @@ private fun ConversationRow(
                 if (c.prefs.pinned) {
                     Icon(painterResource(R.drawable.ic_pin), "Pinned", Modifier.padding(start = 4.dp).size(16.dp), tint = faint)
                 }
-                if (c.unread > 0) {
-                    Spacer(Modifier.width(4.dp))
-                    Badge(
-                        containerColor = if (c.prefs.muted) faint else MaterialTheme.colorScheme.secondary,
-                        contentColor = if (c.prefs.muted) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.onSecondary,
+                if (unread) {
+                    Spacer(Modifier.width(6.dp))
+                    Box(
+                        Modifier
+                            .defaultMinSize(minWidth = 22.dp, minHeight = 22.dp)
+                            .clip(CircleShape)
+                            .background(if (c.prefs.muted) faint else MaterialTheme.colorScheme.secondary)
+                            .padding(horizontal = 6.dp),
+                        contentAlignment = Alignment.Center,
                     ) {
-                        Text(c.unread.toString(), fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 2.dp))
+                        Text(
+                            if (c.unread > 99) "99+" else c.unread.toString(),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = if (c.prefs.muted) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.onSecondary,
+                        )
                     }
                 }
             }

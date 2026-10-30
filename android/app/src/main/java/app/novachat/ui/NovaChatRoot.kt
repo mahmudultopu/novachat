@@ -1,6 +1,13 @@
 package app.novachat.ui
 
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.layout.Box
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.Composable
@@ -107,7 +114,17 @@ private fun MainNav(inviteLink: String?, onInviteShown: () -> Unit, chatToOpen: 
             nav.navigate("chat/$id")
         })
     }
-    NavHost(nav, startDestination = "home") {
+    // New screens glide in from the right and the old one eases back, like turning a page.
+    val glide = tween<IntOffset>(320, easing = FastOutSlowInEasing)
+    val fade = tween<Float>(260)
+    NavHost(
+        nav,
+        startDestination = "home",
+        enterTransition = { slideInHorizontally(glide) { it / 4 } + fadeIn(fade) },
+        exitTransition = { slideOutHorizontally(glide) { -it / 8 } + fadeOut(fade) },
+        popEnterTransition = { slideInHorizontally(glide) { -it / 8 } + fadeIn(fade) },
+        popExitTransition = { slideOutHorizontally(glide) { it / 4 } + fadeOut(fade) },
+    ) {
         composable("home") {
             HomeScreen(
                 openChat = { peerId -> nav.navigate("chat/$peerId") },

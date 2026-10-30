@@ -66,6 +66,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -568,11 +569,13 @@ private fun Bubble(
     }
     val fg = if (mine) colors.onMine else colors.onTheirs
     Column(Modifier.fillMaxWidth(), horizontalAlignment = if (mine) Alignment.End else Alignment.Start) {
+        // My bubbles get the accent's gradient sheen; a highlighted one falls back to a flat tint.
+        val sheen = if (mine && !highlighted) colors.mineBrush else null
         Surface(
-            color = bg,
+            color = if (sheen != null) Color.Transparent else bg,
             shape = shape,
             shadowElevation = if (mine) 0.dp else 1.dp,
-            modifier = Modifier.widthIn(max = 300.dp),
+            modifier = Modifier.widthIn(max = 300.dp).then(if (sheen != null) Modifier.background(sheen, shape) else Modifier),
         ) {
             val attachment = m.attachment.takeUnless { m.undecryptable || m.deleted }
             val visual = attachment != null && (attachment.kind == AttachmentKind.image || attachment.kind == AttachmentKind.video)
@@ -727,15 +730,26 @@ private fun MessageComposer(
                 }
             },
             shape = CircleShape,
-            colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.primary),
-            modifier = Modifier.size(52.dp),
+            colors = IconButtonDefaults.filledIconButtonColors(
+                containerColor = Color.Transparent,
+                contentColor = LocalBubbleColors.current.onMine,
+            ),
+            modifier = Modifier.size(52.dp).background(LocalBubbleColors.current.mineBrush, CircleShape),
         ) {
-            if (editing) {
-                Icon(Icons.Filled.Check, "Save edit")
-            } else if (sendNow) {
-                Icon(Icons.AutoMirrored.Filled.Send, "Send")
-            } else {
-                Icon(painterResource(R.drawable.ic_mic), "Record voice message")
+            // Mic turns into send with a quick fade as soon as there's something to send.
+            Crossfade(
+                when {
+                    editing -> 0
+                    sendNow -> 1
+                    else -> 2
+                },
+                label = "send",
+            ) { icon ->
+                when (icon) {
+                    0 -> Icon(Icons.Filled.Check, "Save edit")
+                    1 -> Icon(Icons.AutoMirrored.Filled.Send, "Send")
+                    else -> Icon(painterResource(R.drawable.ic_mic), "Record voice message")
+                }
             }
         }
     }
