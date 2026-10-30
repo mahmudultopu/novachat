@@ -1,6 +1,7 @@
 package app.novachat.data
 
 import android.content.Context
+import android.net.Uri
 import android.provider.ContactsContract
 import android.telephony.PhoneNumberUtils
 import android.telephony.TelephonyManager
@@ -31,6 +32,37 @@ class AddressBook(private val context: Context) {
             }
         }
         uniqueContacts(found)
+    }
+
+    /**
+     * The name and numbers of the contact at [contactUri], from the contact
+     * picker, as a card to share. Numbers are put in +country form when they
+     * can be, so the person getting the card can message them on NovaChat.
+     */
+    suspend fun card(contactUri: Uri): SharedContact? = withContext(Dispatchers.IO) {
+        val resolver = context.contentResolver
+        val (id, name) = resolver.query(
+            contactUri,
+            arrayOf(ContactsContract.Contacts._ID, ContactsContract.Contacts.DISPLAY_NAME),
+            null,
+            null,
+            null,
+        )?.use { c -> if (c.moveToFirst()) c.getLong(0) to c.getString(1).orEmpty() else null } ?: return@withContext null
+        val country = countryIso()
+        val phones = mutableListOf<String>()
+        resolver.query(
+            ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+            arrayOf(ContactsContract.CommonDataKinds.Phone.NUMBER),
+            ContactsContract.CommonDataKinds.Phone.CONTACT_ID + " = ?",
+            arrayOf(id.toString()),
+            ContactsContract.CommonDataKinds.Phone.IS_SUPER_PRIMARY + " DESC",
+        )?.use { c ->
+            while (c.moveToNext()) {
+                val number = c.getString(0) ?: continue
+                phones += toE164(number, country) ?: number
+            }
+        }
+        cleanContact(SharedContact(name, phones))
     }
 
     private fun countryIso(): String {

@@ -14,6 +14,10 @@ import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import app.novachat.data.MessageRef
+import app.novachat.data.SharedContact
+import app.novachat.data.reachableNumber
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import android.Manifest
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -110,9 +114,15 @@ import app.novachat.ui.common.formatTime
 import app.novachat.ui.theme.LocalBubbleColors
 import app.novachat.ui.theme.wallpaper
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
-fun ChatScreen(peerId: String, onBack: () -> Unit, openInfo: (isGroup: Boolean) -> Unit, focus: MessageRef? = null) {
+fun ChatScreen(
+    peerId: String,
+    onBack: () -> Unit,
+    openInfo: (isGroup: Boolean) -> Unit,
+    focus: MessageRef? = null,
+    openChat: (String) -> Unit = {},
+) {
     val container = appContainer()
     val repo = container.chats
     val messages by remember(peerId) { repo.messagesWith(peerId) }.collectAsStateWithLifecycle(initialValue = emptyList())
@@ -253,6 +263,29 @@ fun ChatScreen(peerId: String, onBack: () -> Unit, openInfo: (isGroup: Boolean) 
     val locationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
         if (result.values.any { it }) sharingLocation = true else toast("NovaChat needs location access to share where you are")
     }
+    var pickedContact by remember { mutableStateOf<SharedContact?>(null) }
+    val pickContact = rememberLauncherForActivityResult(ActivityResultContracts.PickContact()) { uri ->
+        if (uri != null) {
+            scope.launch {
+                pickedContact = runCatching { container.addressBook.card(uri) }.getOrNull()
+                if (pickedContact == null) toast("Couldn't read that contact")
+            }
+        }
+    }
+    val contactsPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) pickContact.launch(null) else toast("NovaChat needs access to your contacts to share one")
+    }
+    fun messageContact(card: SharedContact) {
+        val number = reachableNumber(card) ?: return
+        scope.launch {
+            try {
+                val user = repo.findByPhone(number)
+                if (user.id == myId) toast("That's you") else openChat(user.id)
+            } catch (e: ApiException) {
+                toast("${card.name} isn't on NovaChat yet")
+            }
+        }
+    }
     val cameraPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) openCamera() else toast("NovaChat needs the camera to take photos")
     }
@@ -320,11 +353,24 @@ fun ChatScreen(peerId: String, onBack: () -> Unit, openInfo: (isGroup: Boolean) 
         )
     }
 
+    pickedContact?.let { card ->
+        SendContactDialog(
+            card,
+            onDismiss = { pickedContact = null },
+            onSend = {
+                pickedContact = null
+                repo.sendContact(peerId, card, replyTo = replyTo?.ref)
+                replyTo = null
+            },
+        )
+    }
+
     if (showAttach) {
         ModalBottomSheet(onDismissRequest = { showAttach = false }) {
-            Row(
+            FlowRow(
                 Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 32.dp),
                 horizontalArrangement = Arrangement.SpaceEvenly,
+                maxItemsInEachRow = 3,
             ) {
                 AttachOption(R.drawable.ic_gallery, "Photos & videos", MaterialTheme.colorScheme.primary) {
                     showAttach = false
@@ -349,6 +395,11 @@ fun ChatScreen(peerId: String, onBack: () -> Unit, openInfo: (isGroup: Boolean) 
                     } else {
                         locationPermission.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
                     }
+                }
+                AttachOption(R.drawable.ic_contact, "Contact", Color(0xFF3D8BD9)) {
+                    showAttach = false
+                    val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED
+                    if (granted) pickContact.launch(null) else contactsPermission.launch(Manifest.permission.READ_CONTACTS)
                 }
             }
         }
@@ -458,6 +509,7 @@ fun ChatScreen(peerId: String, onBack: () -> Unit, openInfo: (isGroup: Boolean) 
                         highlighted = m.ref == highlighted,
                         onRetry = { repo.retry(m.clientId) },
                         onLongPress = { actionsFor = m },
+                        onMessageContact = ::messageContact,
                         onQuoteClick = {
                             val index = shown.indexOfFirst { it.ref == m.replyTo }
                             if (index >= 0) {
@@ -580,6 +632,7 @@ private fun Bubble(
     highlighted: Boolean,
     onRetry: () -> Unit,
     onLongPress: () -> Unit,
+    onMessageContact: (SharedContact) -> Unit,
     onQuoteClick: () -> Unit,
     onReactionsClick: () -> Unit,
 ) {
@@ -605,6 +658,7 @@ private fun Bubble(
         ) {
             val attachment = m.attachment.takeUnless { m.undecryptable || m.deleted }
             val place = m.location.takeUnless { m.undecryptable || m.deleted }
+            val card = m.contact.takeUnless { m.undecryptable || m.deleted }
             val visual = attachment != null && (attachment.kind == AttachmentKind.image || attachment.kind == AttachmentKind.video)
             val pad = if (visual) {
                 Modifier.padding(start = 5.dp, end = 5.dp, top = 5.dp, bottom = 6.dp)
@@ -654,6 +708,8 @@ private fun Bubble(
                     )
                 } else if (place != null) {
                     LocationCard(place, fg)
+                } else if (card != null) {
+                    ContactCard(card, fg, onMessage = { onMessageContact(card) })
                 } else if (attachment != null) {
                     AttachmentView(m, attachment, fg, player)
                     if (m.body.isNotEmpty()) {

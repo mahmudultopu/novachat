@@ -62,6 +62,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.novachat.R
 import app.novachat.data.Attachment
 import app.novachat.data.AttachmentKind
+import app.novachat.data.contactLabel
 import app.novachat.data.locationLabel
 import app.novachat.data.ChatMessage
 import app.novachat.ui.appContainer
@@ -299,6 +300,7 @@ fun previewText(m: ChatMessage): String {
         return if (log.outcome == "answered") "$kind · ${formatDuration(log.durationSec * 1000L)}" else kind
     }
     m.location?.let { return locationLabel(it) }
+    m.contact?.let { return contactLabel(it) }
     val a = m.attachment ?: return m.body
     val label = when (a.kind) {
         AttachmentKind.image -> "Photo"

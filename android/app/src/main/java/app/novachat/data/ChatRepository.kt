@@ -605,6 +605,27 @@ class ChatRepository(
         scope.launch { queue(msg) }
     }
 
+    /** Shares someone's name and numbers as a contact card. */
+    fun sendContact(peerId: String, card: SharedContact, replyTo: MessageRef? = null) {
+        val s = session ?: return
+        val clean = cleanContact(card) ?: return
+        val msg = MessageEntity(
+            senderId = s.user.id,
+            clientId = UUID.randomUUID().toString(),
+            id = null,
+            recipientId = peerId,
+            peerId = peerId,
+            body = "",
+            createdAtMillis = System.currentTimeMillis(),
+            deliveredAt = null,
+            readAt = null,
+            failed = false,
+            replyTo = replyTo?.let { NovaJson.encodeToString(it) },
+            contact = NovaJson.encodeToString(clean),
+        )
+        scope.launch { queue(msg) }
+    }
+
     /** Sends a photo, video, voice note or document, with an optional caption. */
     fun sendAttachment(peerId: String, prepared: PreparedMedia, caption: String = "", replyTo: MessageRef? = null) {
         val s = session ?: return
@@ -772,6 +793,7 @@ class ChatRepository(
                     attachment = m.attachment?.let { NovaJson.encodeToString(it) },
                     localPath = path,
                     location = m.location?.let { NovaJson.encodeToString(it) },
+                    contact = m.contact?.let { NovaJson.encodeToString(it) },
                     forwarded = true,
                 )
                 scope.launch { queue(msg) }
@@ -780,7 +802,7 @@ class ChatRepository(
     }
 
     fun canEdit(m: ChatMessage, me: String?): Boolean =
-        m.senderId == me && m.id != null && !m.deleted && m.attachment == null && m.location == null &&
+        m.senderId == me && m.id != null && !m.deleted && m.attachment == null && m.location == null && m.contact == null &&
             System.currentTimeMillis() - m.createdAtMillis < EDIT_WINDOW_MS
 
     fun canDeleteForEveryone(m: ChatMessage, me: String?): Boolean =
@@ -872,10 +894,12 @@ class ChatRepository(
         // Only missed calls notify; an answered call needs no reminder.
         if (call != null && !call.missed) return
         val place = m.location?.let { runCatching { NovaJson.decodeFromString<SharedLocation>(it) }.getOrNull() }
+        val card = m.contact?.let { runCatching { NovaJson.decodeFromString<SharedContact>(it) }.getOrNull() }
         val text = when {
             m.undecryptable -> "New message"
             call != null -> if (call.video) "📹 Missed video call" else "📞 Missed voice call"
             place != null -> locationLabel(place)
+            card != null -> contactLabel(card)
             a == null -> m.body
             else -> when (a.kind) {
                 AttachmentKind.image -> "📷 Photo"
@@ -1208,6 +1232,7 @@ class ChatRepository(
                                 forwarded = msg.forwarded,
                                 callLog = msg.callLog?.let { NovaJson.decodeFromString<CallLog>(it) },
                                 location = msg.location?.let { NovaJson.decodeFromString<SharedLocation>(it) },
+                                contact = msg.contact?.let { NovaJson.decodeFromString<SharedContact>(it) },
                                 expireSec = msg.expireSec(),
                                 timerSec = msg.timerSec(),
                             ),
@@ -1312,6 +1337,7 @@ class ChatRepository(
                 timerSec = root.timerSec(),
                 callLog = root.callLog?.let { NovaJson.decodeFromString<CallLog>(it) },
                 location = root.location?.let { NovaJson.decodeFromString<SharedLocation>(it) },
+                contact = root.contact?.let { NovaJson.decodeFromString<SharedContact>(it) },
             )
             fanOut(groupId, content, parent = root.clientId)
         } finally {
@@ -1691,6 +1717,7 @@ class ChatRepository(
                                     forwarded = content.forwarded,
                                     callLog = content.callLog?.let { NovaJson.encodeToString(it) },
                                     location = content.location?.takeIf(::isValidPlace)?.let { NovaJson.encodeToString(it.copy(name = it.name?.take(MAX_PLACE_NAME))) },
+                                    contact = content.contact?.let(::cleanContact)?.let { NovaJson.encodeToString(it) },
                                     expiresAtMillis = expiry(base, content),
                                 ),
                             )
@@ -1711,6 +1738,7 @@ class ChatRepository(
                             forwarded = content.forwarded,
                             callLog = content.callLog?.let { NovaJson.encodeToString(it) },
                             location = content.location?.takeIf(::isValidPlace)?.let { NovaJson.encodeToString(it.copy(name = it.name?.take(MAX_PLACE_NAME))) },
+                            contact = content.contact?.let(::cleanContact)?.let { NovaJson.encodeToString(it) },
                             // An answered call is nothing new to read: don't count it as unread.
                             readAt = if (content.callLog?.missed == false) base.readAt ?: dto.createdAt else base.readAt,
                             expiresAtMillis = expiry(base, content),

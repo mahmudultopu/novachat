@@ -120,6 +120,8 @@ data class ChatMessage(
     val callLog: CallLog? = null,
     /** A shared location. */
     val location: SharedLocation? = null,
+    /** A shared contact card. */
+    val contact: SharedContact? = null,
 ) {
     val ref: MessageRef get() = MessageRef(senderId, clientId)
 
@@ -275,6 +277,8 @@ data class MessageContent(
     @SerialName("call_log") val callLog: CallLog? = null,
     /** A shared place: where the sender was when they sent it. */
     val location: SharedLocation? = null,
+    /** A contact card: someone's name and phone numbers. */
+    val contact: SharedContact? = null,
     /** Disappearing messages: this message vanishes this many seconds after it was sent. */
     @SerialName("expire_s") val expireSec: Int? = null,
     /** "I set disappearing messages to this many seconds" (0 is off), shown as a line in the chat. */
@@ -310,6 +314,13 @@ data class SharedLocation(
     val lon: Double,
     @SerialName("accuracy_m") val accuracyM: Int? = null,
     val name: String? = null,
+)
+
+/** A contact card someone shared: a name and up to five phone numbers. */
+@Serializable
+data class SharedContact(
+    val name: String,
+    val phones: List<String> = emptyList(),
 )
 
 /** A finished call as a line in the chat. The caller sends it to both phones. */
