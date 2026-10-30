@@ -78,8 +78,10 @@ Settings come from environment variables:
 4. Start the second emulator, pick it and press **Run** again. Both now have
    NovaChat installed.
 
-The emulator reaches your laptop at `10.0.2.2`, so the app talks to
-`http://10.0.2.2:8080` out of the box.
+Builds talk to the online test server (`novachat.serverUrl` in
+`android/gradle.properties`) out of the box. To use the server on your laptop
+instead, tap the gear icon on the sign-in screen and enter
+`http://10.0.2.2:8080` (the emulator reaches your laptop at `10.0.2.2`).
 
 ### Send your first message
 
