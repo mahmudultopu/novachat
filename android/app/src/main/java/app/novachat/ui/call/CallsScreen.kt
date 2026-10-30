@@ -44,6 +44,7 @@ fun CallsScreen(openChat: (String) -> Unit, modifier: Modifier = Modifier) {
     val container = appContainer()
     val logs by container.chats.callLogs.collectAsStateWithLifecycle(initialValue = emptyList())
     val people by container.chats.people.collectAsStateWithLifecycle(initialValue = emptyMap())
+    val groups by container.chats.groups.collectAsStateWithLifecycle(initialValue = emptyMap())
     val session by container.session.collectAsStateWithLifecycle()
     val myId = (session as? SessionState.SignedIn)?.session?.user?.id
     val call = rememberCallStarter()
@@ -71,7 +72,7 @@ fun CallsScreen(openChat: (String) -> Unit, modifier: Modifier = Modifier) {
             items(logs, key = { it.senderId + it.clientId }) { m ->
                 val log = m.callLog ?: return@items
                 val outgoing = m.senderId == myId
-                val person = people[m.peerId]
+                val person = groups[m.peerId]?.asUser() ?: people[m.peerId]
                 val name = person?.displayName ?: "…"
                 val missed = log.missed && !outgoing
                 Row(

@@ -1,14 +1,10 @@
 package app.novachat.calls
 
-import android.content.Context
 import app.novachat.data.IceServerDto
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
-import org.webrtc.Camera2Enumerator
-import org.webrtc.CameraVideoCapturer
 import org.webrtc.DataChannel
-import org.webrtc.EglBase
 import org.webrtc.IceCandidate
 import org.webrtc.MediaConstraints
 import org.webrtc.MediaStream
@@ -17,14 +13,13 @@ import org.webrtc.PeerConnectionFactory
 import org.webrtc.RtpTransceiver
 import org.webrtc.SdpObserver
 import org.webrtc.SessionDescription
-import org.webrtc.SurfaceTextureHelper
 import org.webrtc.VideoTrack
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 /**
- * One WebRTC connection: our microphone and camera, and the other phone's
- * audio and video. Media is encrypted end to end by WebRTC itself (DTLS-SRTP);
+ * One WebRTC connection to one other phone: tracks from our [LocalMedia], and
+ * the other phone's audio and video. Media is encrypted end to end by WebRTC itself (DTLS-SRTP);
  * the fingerprint that pins those keys travels inside the offer and answer,
  * which go through our end-to-end encrypted messages.
  *
@@ -32,9 +27,8 @@ import kotlin.coroutines.resumeWithException
  * ICE), so a call needs exactly one message each way.
  */
 internal class RtcSession(
-    private val context: Context,
-    private val factory: PeerConnectionFactory,
-    private val egl: EglBase,
+    factory: PeerConnectionFactory,
+    media: LocalMedia,
     iceServers: List<IceServerDto>,
     private val onConnection: (PeerConnection.PeerConnectionState) -> Unit,
     private val onRemoteVideo: (VideoTrack) -> Unit,
@@ -79,19 +73,15 @@ internal class RtcSession(
         observer,
     ) ?: throw IllegalStateException("Couldn't start WebRTC")
 
-    private val audioSource = factory.createAudioSource(MediaConstraints())
-    private val audioTrack = factory.createAudioTrack("audio0", audioSource)
-    private val videoSource = factory.createVideoSource(false)
+    private val audioTrack = media.newAudioTrack()
 
     /** Our camera. Always part of the call, so turning it on needs no renegotiation. */
-    val videoTrack: VideoTrack = factory.createVideoTrack("video0", videoSource).apply { setEnabled(false) }
+    private val videoTrack = media.newVideoTrack()
 
-    private var capturer: CameraVideoCapturer? = null
-    private var textures: SurfaceTextureHelper? = null
-    var frontCamera = true
-        private set
+    private var tracksAdded = false
 
     private fun addTracks() {
+        tracksAdded = true
         pc.addTrack(audioTrack, listOf("nova"))
         pc.addTrack(videoTrack, listOf("nova"))
     }
@@ -117,60 +107,17 @@ internal class RtcSession(
         audioTrack.setEnabled(!muted)
     }
 
-    /** Starts or stops the camera. Returns false when there is no camera. */
-    fun setCamera(on: Boolean): Boolean {
-        if (on && !startCamera()) return false
-        if (!on) stopCamera()
+    fun setVideo(on: Boolean) {
         videoTrack.setEnabled(on)
-        return true
-    }
-
-    fun switchCamera(done: (front: Boolean) -> Unit) {
-        capturer?.switchCamera(object : CameraVideoCapturer.CameraSwitchHandler {
-            override fun onCameraSwitchDone(isFront: Boolean) {
-                frontCamera = isFront
-                done(isFront)
-            }
-
-            override fun onCameraSwitchError(error: String?) {}
-        })
     }
 
     fun close() {
-        stopCamera()
         // Disposing the connection also disposes the tracks added to it.
         pc.dispose()
-        videoSource.dispose()
-        audioSource.dispose()
-    }
-
-    private fun startCamera(): Boolean {
-        if (capturer != null) return true
-        val cameras = Camera2Enumerator(context)
-        val names = cameras.deviceNames
-        val name = names.firstOrNull { cameras.isFrontFacing(it) == frontCamera } ?: names.firstOrNull() ?: return false
-        val helper = SurfaceTextureHelper.create("camera", egl.eglBaseContext)
-        val cap = cameras.createCapturer(name, null)
-        cap.initialize(helper, context, videoSource.capturerObserver)
-        cap.startCapture(CAPTURE_WIDTH, CAPTURE_HEIGHT, CAPTURE_FPS)
-        frontCamera = cameras.isFrontFacing(name)
-        capturer = cap
-        textures = helper
-        return true
-    }
-
-    private fun stopCamera() {
-        capturer?.let {
-            try {
-                it.stopCapture()
-            } catch (e: InterruptedException) {
-                Thread.currentThread().interrupt()
-            }
-            it.dispose()
+        if (!tracksAdded) {
+            audioTrack.dispose()
+            videoTrack.dispose()
         }
-        textures?.dispose()
-        capturer = null
-        textures = null
     }
 
     private suspend fun gatheredDescription(): String {
@@ -215,8 +162,5 @@ internal class RtcSession(
 
     private companion object {
         const val GATHER_TIMEOUT_MS = 4_000L
-        const val CAPTURE_WIDTH = 1280
-        const val CAPTURE_HEIGHT = 720
-        const val CAPTURE_FPS = 30
     }
 }

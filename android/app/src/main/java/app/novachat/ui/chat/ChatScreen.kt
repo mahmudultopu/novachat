@@ -379,7 +379,10 @@ fun ChatScreen(peerId: String, onBack: () -> Unit, openInfo: (isGroup: Boolean) 
                 },
                 actions = {
                     IconButton(onClick = { searching = true }) { Icon(Icons.Filled.Search, "Search") }
-                    if (group == null && !blocked) {
+                    // Group calls need someone else in the group, and you still in it.
+                    val gr = group
+                    val canCall = if (gr == null) !blocked else !gr.left && gr.member(myId) != null && gr.members.size > 1
+                    if (canCall) {
                         IconButton(onClick = { startCall(peerId, true) }) {
                             Icon(painterResource(R.drawable.ic_videocam), "Video call")
                         }

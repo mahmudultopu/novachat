@@ -73,7 +73,11 @@ fun rememberCallStarter(): (peerId: String, video: Boolean) -> Unit {
 
 /** "Voice call · 2:31", "Missed video call" and so on, from the reader's side. */
 fun callLogText(log: CallLog, outgoing: Boolean): String {
-    val kind = if (log.video) "Video call" else "Voice call"
+    val kind = (if (log.group) "Group " else "") + if (log.group) {
+        if (log.video) "video call" else "voice call"
+    } else {
+        if (log.video) "Video call" else "Voice call"
+    }
     return when {
         log.outcome == "answered" -> "$kind · ${formatDuration(log.durationSec * 1000L)}"
         !outgoing -> "Missed ${kind.lowercase()}"
