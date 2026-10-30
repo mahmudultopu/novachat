@@ -118,6 +118,8 @@ data class ChatMessage(
     val system: Boolean = false,
     /** A finished voice or video call. */
     val callLog: CallLog? = null,
+    /** A shared location. */
+    val location: SharedLocation? = null,
 ) {
     val ref: MessageRef get() = MessageRef(senderId, clientId)
 
@@ -271,6 +273,8 @@ data class MessageContent(
     /** Calls: setting one up (hidden), and the "Missed voice call" line afterwards. */
     val call: CallSignal? = null,
     @SerialName("call_log") val callLog: CallLog? = null,
+    /** A shared place: where the sender was when they sent it. */
+    val location: SharedLocation? = null,
     /** Disappearing messages: this message vanishes this many seconds after it was sent. */
     @SerialName("expire_s") val expireSec: Int? = null,
     /** "I set disappearing messages to this many seconds" (0 is off), shown as a line in the chat. */
@@ -297,6 +301,15 @@ data class CallSignal(
     val video: Boolean = false,
     val sdp: String? = null,
     val group: String? = null,
+)
+
+/** A place someone shared: coordinates, how accurate they are, and an optional name. */
+@Serializable
+data class SharedLocation(
+    val lat: Double,
+    val lon: Double,
+    @SerialName("accuracy_m") val accuracyM: Int? = null,
+    val name: String? = null,
 )
 
 /** A finished call as a line in the chat. The caller sends it to both phones. */
