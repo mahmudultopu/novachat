@@ -169,7 +169,7 @@ private fun Preview(sample: app.novachat.ui.theme.Wallpaper) {
             color = bubbles.onMine,
             modifier = Modifier
                 .align(Alignment.End)
-                .background(bubbles.mine, RoundedCornerShape(16.dp))
+                .background(bubbles.mineBrush, RoundedCornerShape(16.dp))
                 .padding(horizontal = 12.dp, vertical = 8.dp),
         )
     }
