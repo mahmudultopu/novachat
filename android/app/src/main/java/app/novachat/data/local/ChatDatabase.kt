@@ -209,6 +209,14 @@ data class ChatPrefsEntity(
     @ColumnInfo(defaultValue = "0") val disappearSec: Int = 0,
 )
 
+/** Someone in the phone's address book; [userId] is set when they use NovaChat. */
+@Entity(tableName = "contacts")
+data class ContactEntity(
+    @PrimaryKey val phone: String,
+    val name: String,
+    val userId: String? = null,
+)
+
 data class UnreadCount(val peerId: String, val unread: Int)
 
 @Dao
@@ -529,6 +537,22 @@ abstract class ChatDao {
     @Query("DELETE FROM chat_prefs")
     abstract suspend fun deleteChatPrefs()
 
+    @Query("SELECT * FROM contacts ORDER BY name COLLATE NOCASE")
+    abstract fun contacts(): Flow<List<ContactEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    abstract suspend fun insertContacts(contacts: List<ContactEntity>)
+
+    @Query("DELETE FROM contacts")
+    abstract suspend fun deleteContacts()
+
+    /** Swaps in a fresh copy of the address book. */
+    @Transaction
+    open suspend fun replaceContacts(contacts: List<ContactEntity>) {
+        deleteContacts()
+        insertContacts(contacts)
+    }
+
     @Query("DELETE FROM messages")
     abstract suspend fun deleteMessages()
 
@@ -549,6 +573,7 @@ abstract class ChatDao {
         deleteGroups()
         deleteStatuses()
         deleteChatPrefs()
+        deleteContacts()
     }
 }
 
@@ -559,8 +584,8 @@ abstract class ChatDao {
  * so every schema change needs a migration that keeps the data.
  */
 @Database(
-    entities = [MessageEntity::class, UserEntity::class, MetaEntity::class, SessionEntity::class, PreKeyEntity::class, GroupEntity::class, StatusEntity::class, ChatPrefsEntity::class],
-    version = 10,
+    entities = [MessageEntity::class, UserEntity::class, MetaEntity::class, SessionEntity::class, PreKeyEntity::class, GroupEntity::class, StatusEntity::class, ChatPrefsEntity::class, ContactEntity::class],
+    version = 11,
     exportSchema = false,
 )
 abstract class ChatDatabase : RoomDatabase() {
@@ -659,9 +684,15 @@ abstract class ChatDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_10_11 = object : Migration(10, 11) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS `contacts` (`phone` TEXT NOT NULL, `name` TEXT NOT NULL, `userId` TEXT, PRIMARY KEY(`phone`))")
+            }
+        }
+
         fun open(context: Context): ChatDatabase =
             Room.databaseBuilder(context, ChatDatabase::class.java, "novachat.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11)
                 .build()
     }
 }

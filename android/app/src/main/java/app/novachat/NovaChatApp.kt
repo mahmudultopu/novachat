@@ -6,6 +6,7 @@ import app.novachat.calls.CallManager
 import app.novachat.notify.ConnectionService
 import app.novachat.notify.Notifier
 import kotlinx.coroutines.flow.MutableStateFlow
+import app.novachat.data.AddressBook
 import app.novachat.data.ApiClient
 import app.novachat.data.ChatRepository
 import app.novachat.data.ChatSocket
@@ -68,6 +69,7 @@ class AppContainer(app: Application) {
 
     private val prefs = app.getSharedPreferences("settings", Context.MODE_PRIVATE)
     val appearance = AppearanceStore(prefs)
+    val addressBook = AddressBook(app)
     private val _backgroundConnection = MutableStateFlow(prefs.getBoolean(KEY_BACKGROUND, true))
     /** Stay connected while the app is closed, so messages notify right away. */
     val backgroundConnection: StateFlow<Boolean> = _backgroundConnection

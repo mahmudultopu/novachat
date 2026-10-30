@@ -94,3 +94,30 @@ func TestPrivacyAndBlocking(t *testing.T) {
 		t.Fatalf("empty reason accepted: %d", code)
 	}
 }
+
+func TestContactMatching(t *testing.T) {
+	base := testServer(t)
+	n := time.Now().UnixNano() % 10_000_000
+	ana := signUp(t, base, fmt.Sprintf("+1762%07d", n), "Ana")
+	ben := signUp(t, base, fmt.Sprintf("+1763%07d", n), "Ben")
+
+	var res struct {
+		Users []struct{ ID, Name string }
+	}
+	phones := []string{
+		fmt.Sprintf("+1 763 %07d", n), // Ben, with spaces
+		fmt.Sprintf("+1763%07d", n),   // Ben again
+		fmt.Sprintf("+1762%07d", n),   // Ana herself
+		"+19995550000",                // nobody
+		"0171 not a number",
+	}
+	if code := post(t, base+"/v1/contacts/match", ana.token, map[string]any{"phones": phones}, &res); code != 200 {
+		t.Fatalf("match: %d", code)
+	}
+	if len(res.Users) != 1 || res.Users[0].ID != ben.id || res.Users[0].Name != "Ben" {
+		t.Fatalf("matched %+v", res.Users)
+	}
+	if code := post(t, base+"/v1/contacts/match", ana.token, map[string]any{"phones": make([]string, 5001)}, nil); code != 400 {
+		t.Fatalf("huge address book accepted: %d", code)
+	}
+}

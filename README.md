@@ -391,6 +391,17 @@ changed it. In a group, only people who may edit the group info can change it.
   have a light and a dark version.
 * All of this stays on the phone; nobody else sees it.
 
+### Contacts
+
+* **New chat** lists your phone contacts who use NovaChat, so you can tap a
+  name instead of typing a number. Everyone else is under **Invite to
+  NovaChat**, which opens a text message with the download link.
+* The first time, NovaChat asks to read your contacts. Only the phone
+  numbers go to the server, which answers which of them are NovaChat users
+  and does not keep the list. Names stay on the phone.
+* Numbers saved without a country code use your SIM's country. The list
+  refreshes every time you open New chat.
+
 ### Block, report and privacy
 
 * **Settings → Privacy** sets who sees your last seen and online, profile
@@ -423,6 +434,7 @@ changed it. In a group, only people who may edit the group info can change it.
 | `GET`, `PATCH /v1/me/privacy` `{last_seen, photo, about, read_receipts}` | Bearer | Your privacy settings |
 | `GET /v1/blocks`, `PUT`, `DELETE /v1/blocks/{id}` | Bearer | List, block or unblock people |
 | `POST /v1/reports` `{user_id, reason, block}` | Bearer | Report someone, optionally blocking them |
+| `POST /v1/contacts/match` `{phones}` | Bearer | Which of these numbers (up to 5000) are NovaChat users; not stored |
 | `GET /v1/conversations` | Bearer | Chats with last message and unread count |
 | `GET /v1/messages?peer=&before=&limit=` | Bearer | Older messages in one chat |
 | `GET /v1/sync?after=&limit=` | Bearer | Everything since a message id |
@@ -516,5 +528,6 @@ Following the builder guide, in order:
     [Block, report and privacy](#block-report-and-privacy)).
 11. **Find and personalise**: ~~search~~ (done in 0.14.0, see [Search](#search)),
     ~~wallpapers and themes~~ (done in 0.15.0, see
-    [Theme and wallpaper](#theme-and-wallpaper)); contacts next.
+    [Theme and wallpaper](#theme-and-wallpaper)), ~~contacts~~ (done in
+    0.16.0, see [Contacts](#contacts)).
 12. A real **SMS provider** for production sign-up, and deployment.

@@ -407,3 +407,9 @@ data class KeyBundleDto(
 
 @Serializable
 data class UploadResponse(val id: String, val size: Long)
+
+@Serializable
+data class ContactMatches(val users: List<User> = emptyList())
+
+/** Someone from the phone's address book, with their NovaChat profile if they have one. */
+data class Contact(val phone: String, val name: String, val user: User?)
