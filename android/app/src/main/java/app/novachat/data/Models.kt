@@ -27,8 +27,12 @@ data class MessageDto(
     @SerialName("sender_id") val senderId: String,
     @SerialName("recipient_id") val recipientId: String,
     val body: String = "",
-    /** End-to-end encrypted content; the server cannot read it. */
+    /** Encrypted content from before linked devices (one envelope per person). */
     val envelope: String? = null,
+    /** Which of the sender's devices sent it. */
+    @SerialName("sender_device") val senderDevice: String? = null,
+    /** The content encrypted for each device that may read it, by device ID. */
+    val envelopes: Map<String, String>? = null,
     @SerialName("created_at") val createdAt: String,
     @SerialName("delivered_at") val deliveredAt: String? = null,
     @SerialName("read_at") val readAt: String? = null,
@@ -69,6 +73,8 @@ data class PinStatus(val enabled: Boolean = false)
 data class ServerFrame(
     val type: String,
     @SerialName("user_id") val userId: String? = null,
+    /** "ready": which device this connection is. */
+    @SerialName("device_id") val deviceId: String? = null,
     val message: MessageDto? = null,
     val status: String? = null,
     @SerialName("message_ids") val messageIds: List<Long> = emptyList(),
@@ -306,8 +312,12 @@ data class CallLog(
     val missed: Boolean get() = outcome != "answered"
 }
 
-/** A call signal from [from], with when the server received it. */
-data class IncomingCallSignal(val from: String, val signal: CallSignal, val sentAtMillis: Long)
+/**
+ * A call signal from [from], with when the server received it. [elsewhere]
+ * marks one you sent to [from] from another of your devices, such as
+ * answering there, so this device stops ringing.
+ */
+data class IncomingCallSignal(val from: String, val signal: CallSignal, val sentAtMillis: Long, val elsewhere: Boolean = false)
 
 /** A STUN or TURN server for calls, from GET /v1/calls/ice. */
 @Serializable
@@ -416,10 +426,42 @@ data class PublishKeysResponse(@SerialName("one_time_prekeys") val oneTimePreKey
 @Serializable
 data class KeyBundleDto(
     @SerialName("user_id") val userId: String,
+    @SerialName("device_id") val deviceId: String = "",
     @SerialName("identity_key") val identityKey: String,
     @SerialName("signing_key") val signingKey: String,
     @SerialName("signed_prekey") val signedPreKey: SignedPreKeyDto,
     @SerialName("one_time_prekey") val oneTimePreKey: OneTimePreKeyDto? = null,
+)
+
+/** One device someone can receive messages on, and the identity key it encrypts to. */
+@Serializable
+data class DeviceKeyDto(
+    val id: String,
+    @SerialName("identity_key") val identityKey: String,
+)
+
+@Serializable
+data class DeviceKeysResponse(val devices: List<DeviceKeyDto> = emptyList())
+
+/** A device signed in to your account, as listed under Linked devices. */
+@Serializable
+data class LinkedDevice(
+    val id: String,
+    val name: String = "",
+    /** Linked from the phone, rather than the phone itself. */
+    val linked: Boolean = false,
+    @SerialName("created_at") val createdAt: String = "",
+    @SerialName("last_seen_at") val lastSeenAt: String = "",
+    /** The device you're using right now. */
+    val current: Boolean = false,
+)
+
+/** A code for a new device to show while the phone links it. */
+@Serializable
+data class LinkStart(
+    val code: String,
+    val poll: String,
+    @SerialName("expires_in") val expiresIn: Int,
 )
 
 @Serializable

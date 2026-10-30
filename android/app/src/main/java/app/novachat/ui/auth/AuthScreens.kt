@@ -101,6 +101,7 @@ fun AuthFlow() {
                 AuthUiState.Step.Phone -> PhoneStep(state, vm)
                 AuthUiState.Step.Code -> CodeStep(state, vm)
                 AuthUiState.Step.Pin -> PinStep(state, vm)
+                AuthUiState.Step.Link -> LinkStep(state, vm)
             }
         }
     }
@@ -147,6 +148,56 @@ private fun PhoneStep(state: AuthUiState, vm: AuthViewModel) {
     ErrorText(state.error)
     Spacer(Modifier.height(24.dp))
     PrimaryButton("Send code", enabled = state.number.count(Char::isDigit) >= 6, loading = state.loading, onClick = vm::requestCode)
+    Spacer(Modifier.height(12.dp))
+    TextButton(onClick = vm::startLink, enabled = !state.loading, modifier = Modifier.fillMaxWidth()) {
+        Text("Already on NovaChat on your phone? Link this device")
+    }
+}
+
+/** A device joining an account that's on a phone: shows a code to type on the phone. */
+@Composable
+private fun LinkStep(state: AuthUiState, vm: AuthViewModel) {
+    Text("Link to your phone", style = MaterialTheme.typography.titleLarge, modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
+    Spacer(Modifier.height(8.dp))
+    Text(
+        "On your phone, open NovaChat, go to Settings, then Linked devices, tap Link a device and type this code.",
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        textAlign = TextAlign.Center,
+        modifier = Modifier.fillMaxWidth(),
+    )
+    Spacer(Modifier.height(28.dp))
+    val code = state.linkCode
+    if (code != null) {
+        Surface(color = MaterialTheme.colorScheme.primaryContainer, shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
+            Text(
+                code,
+                style = MaterialTheme.typography.displaySmall.copy(letterSpacing = 4.sp),
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(vertical = 20.dp),
+            )
+        }
+        Spacer(Modifier.height(20.dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+            Spacer(Modifier.width(10.dp))
+            Text("Waiting for your phone…", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Spacer(Modifier.height(16.dp))
+        Text(
+            "Messages from before you link stay on your phone. Restore a chat backup here to bring them over.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
+    ErrorText(state.error)
+    if (code == null) {
+        Spacer(Modifier.height(24.dp))
+        PrimaryButton("Get a new code", enabled = true, loading = state.loading, onClick = vm::startLink)
+    }
 }
 
 @Composable

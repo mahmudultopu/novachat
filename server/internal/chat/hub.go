@@ -3,6 +3,7 @@ package chat
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -10,14 +11,16 @@ import (
 )
 
 // Hub routes events to users' open connections. Every server instance
-// shares one Redis subscription and subscribes to a user's channel while
-// that user has a connection here, so a message published by any instance
-// reaches the right phones. (NATS JetStream replaces this at scale.)
+// shares one Redis subscription and subscribes to a user's channel (and
+// each device's own channel) while it has a connection here, so a message
+// published by any instance reaches the right phones. (NATS JetStream
+// replaces this at scale.)
 type Hub struct {
 	rdb *redis.Client
 	ps  *redis.PubSub
 
-	mu    sync.Mutex
+	mu sync.Mutex
+	// Channel name to the connections listening on it.
 	conns map[string]map[*client]struct{}
 }
 
@@ -35,14 +38,29 @@ const (
 
 func channel(userID string) string { return "nc:user:" + userID }
 
+func deviceChannel(deviceID string) string { return "nc:device:" + deviceID }
+
+// kick is published on a device's channel when it is signed out.
+const kick = "kick"
+
 func (h *Hub) run() {
 	for msg := range h.ps.Channel() {
-		userID := msg.Channel[len("nc:user:"):]
 		h.mu.Lock()
-		for c := range h.conns[userID] {
+		for c := range h.conns[msg.Channel] {
+			if strings.HasPrefix(msg.Channel, "nc:device:") && msg.Payload == kick {
+				c.cancel()
+				continue
+			}
 			c.enqueue([]byte(msg.Payload))
 		}
 		h.mu.Unlock()
+	}
+}
+
+// Kick closes a signed-out device's connections, on any instance.
+func (h *Hub) Kick(ctx context.Context, deviceID string) {
+	if err := h.rdb.Publish(ctx, deviceChannel(deviceID), kick).Err(); err != nil {
+		slog.Error("kick failed", "device", deviceID, "err", err)
 	}
 }
 
@@ -53,45 +71,45 @@ func (h *Hub) Publish(ctx context.Context, userID string, payload []byte) {
 	}
 }
 
-// add registers a connection. first reports whether it is the user's only
-// connection on this instance.
-func (h *Hub) add(ctx context.Context, c *client) (first bool, err error) {
+// add registers a connection on its user's and its device's channels.
+func (h *Hub) add(ctx context.Context, c *client) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	set := h.conns[c.userID]
-	if set == nil {
-		if err := h.ps.Subscribe(ctx, channel(c.userID)); err != nil {
-			return false, err
+	for _, ch := range []string{channel(c.userID), deviceChannel(c.deviceID)} {
+		set := h.conns[ch]
+		if set == nil {
+			if err := h.ps.Subscribe(ctx, ch); err != nil {
+				return err
+			}
+			set = map[*client]struct{}{}
+			h.conns[ch] = set
 		}
-		set = map[*client]struct{}{}
-		h.conns[c.userID] = set
+		set[c] = struct{}{}
 	}
-	set[c] = struct{}{}
-	return len(set) == 1, nil
+	return nil
 }
 
-// remove drops a connection. last reports whether the user has no other
-// connection on this instance.
-func (h *Hub) remove(c *client) (last bool) {
+// remove drops a connection.
+func (h *Hub) remove(c *client) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	set := h.conns[c.userID]
-	delete(set, c)
-	if len(set) == 0 {
-		delete(h.conns, c.userID)
-		if err := h.ps.Unsubscribe(context.Background(), channel(c.userID)); err != nil {
-			slog.Error("unsubscribe failed", "user", c.userID, "err", err)
+	for _, ch := range []string{channel(c.userID), deviceChannel(c.deviceID)} {
+		set := h.conns[ch]
+		delete(set, c)
+		if len(set) == 0 {
+			delete(h.conns, ch)
+			if err := h.ps.Unsubscribe(context.Background(), ch); err != nil {
+				slog.Error("unsubscribe failed", "channel", ch, "err", err)
+			}
 		}
-		return true
 	}
-	return false
 }
 
 // anyActive reports whether userID has a connection here with the app on screen.
 func (h *Hub) anyActive(userID string) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	for c := range h.conns[userID] {
+	for c := range h.conns[channel(userID)] {
 		if c.active.Load() {
 			return true
 		}

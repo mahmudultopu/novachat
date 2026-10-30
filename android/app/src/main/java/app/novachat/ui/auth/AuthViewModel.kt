@@ -5,6 +5,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.novachat.AppContainer
 import app.novachat.data.ApiException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
@@ -24,8 +26,10 @@ data class AuthUiState(
     val pin: String = "",
     /** When a "forgot PIN" reset takes effect, as the server sent it. */
     val resetAt: String? = null,
+    /** Linking to a phone: the code to type there, or null once it expired. */
+    val linkCode: String? = null,
 ) {
-    enum class Step { Phone, Code, Pin }
+    enum class Step { Phone, Code, Pin, Link }
 }
 
 /** What to tell someone whose PIN didn't work. */
@@ -67,8 +71,38 @@ class AuthViewModel(private val container: AppContainer) : ViewModel() {
         if (digits.length == 6) submitPin()
     }
 
-    fun back() = _state.update {
-        it.copy(step = AuthUiState.Step.Phone, code = "", error = null, challenge = null, pin = "", resetAt = null)
+    fun back() {
+        linking?.cancel()
+        _state.update {
+            it.copy(step = AuthUiState.Step.Phone, code = "", error = null, challenge = null, pin = "", resetAt = null, linkCode = null)
+        }
+    }
+
+    private var linking: Job? = null
+
+    /** Use this device with an account that's already on a phone: show a code to type there. */
+    fun startLink() = launchWithErrors {
+        val url = container.sessionStore.currentServerUrl()
+        val start = container.api.startLink(url, "${Build.MANUFACTURER} ${Build.MODEL}")
+        _state.update { it.copy(step = AuthUiState.Step.Link, linkCode = start.code, error = null) }
+        linking?.cancel()
+        linking = viewModelScope.launch { waitForPhone(url, start.poll, start.expiresIn) }
+    }
+
+    private suspend fun waitForPhone(url: String, poll: String, expiresInSec: Int) {
+        val until = System.currentTimeMillis() + expiresInSec * 1000L
+        while (System.currentTimeMillis() < until) {
+            delay(LINK_POLL_MS)
+            val res = try {
+                container.api.pollLink(url, poll)
+            } catch (e: ApiException) {
+                if (e.status == 404) break
+                continue // offline for a moment
+            } ?: continue
+            container.sessionStore.signIn(res.token, res.user)
+            return
+        }
+        _state.update { it.copy(linkCode = null, error = "The code expired. Get a new one to try again.") }
     }
 
     fun setServerUrl(url: String) = viewModelScope.launch { container.sessionStore.setServerUrl(url) }
@@ -113,6 +147,10 @@ class AuthViewModel(private val container: AppContainer) : ViewModel() {
             throw ApiException(e.status, e.code, pinErrorText(e), e.body)
         }
         container.sessionStore.signIn(res.token, res.user)
+    }
+
+    private companion object {
+        const val LINK_POLL_MS = 2_000L
     }
 
     private fun launchWithErrors(block: suspend () -> Unit) {

@@ -175,31 +175,27 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("conversations %+v", convs)
 	}
 
-	// End-to-end encryption: Bob publishes keys, Alice claims a bundle and
-	// sends an envelope the server stores but cannot read.
-	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
-	identity, spk := randomKey(), randomKey()
-	keysReq := map[string]any{
-		"identity_key":  identity,
-		"signing_key":   []byte(pub),
-		"signed_prekey": map[string]any{"id": 1, "public_key": spk, "signature": ed25519.Sign(priv, spk)},
-		"one_time_prekeys": []map[string]any{
-			{"id": 7, "public_key": randomKey()},
-			{"id": 8, "public_key": randomKey()},
-		},
-	}
-	var left struct {
-		OneTimePreKeys int `json:"one_time_prekeys"`
-	}
-	if code := do(t, "PUT", srv.URL+"/v1/keys", bob.token, keysReq, &left); code != 200 || left.OneTimePreKeys != 2 {
-		t.Fatalf("publish keys: status %d, left %d", code, left.OneTimePreKeys)
-	}
-	badSig := map[string]any{"identity_key": identity, "signing_key": []byte(pub),
-		"signed_prekey": map[string]any{"id": 1, "public_key": spk, "signature": make([]byte, 64)}}
+	// End-to-end encryption: Bob publishes keys for his phone, Alice claims a
+	// bundle for it and sends envelopes the server stores but cannot read.
+	bobPhone := publishKeys(t, srv.URL, bob.token, 7, 8)
+	badPub, _, _ := ed25519.GenerateKey(rand.Reader)
+	badSig := map[string]any{"identity_key": randomKey(), "signing_key": []byte(badPub),
+		"signed_prekey": map[string]any{"id": 1, "public_key": randomKey(), "signature": make([]byte, 64)}}
 	if code := do(t, "PUT", srv.URL+"/v1/keys", bob.token, badSig, nil); code != http.StatusBadRequest {
 		t.Fatalf("bad signature accepted: status %d", code)
 	}
+	var listed struct {
+		Devices []struct {
+			ID          string `json:"id"`
+			IdentityKey []byte `json:"identity_key"`
+		}
+	}
+	if code := get(t, srv.URL+"/v1/keys/"+bob.id, alice.token, &listed); code != 200 || len(listed.Devices) != 1 ||
+		listed.Devices[0].ID != bobPhone.id || !bytes.Equal(listed.Devices[0].IdentityKey, bobPhone.identity) {
+		t.Fatalf("list devices: status %d, %+v", code, listed)
+	}
 	var bundle struct {
+		DeviceID      string `json:"device_id"`
 		IdentityKey   []byte `json:"identity_key"`
 		OneTimePreKey *struct {
 			ID int `json:"id"`
@@ -207,7 +203,8 @@ func TestEndToEnd(t *testing.T) {
 	}
 	for _, want := range []int{7, 8, 0} {
 		bundle.OneTimePreKey = nil
-		if code := get(t, srv.URL+"/v1/keys/"+bob.id, alice.token, &bundle); code != 200 || !bytes.Equal(bundle.IdentityKey, identity) {
+		if code := get(t, srv.URL+"/v1/keys/"+bob.id+"/"+bobPhone.id, alice.token, &bundle); code != 200 ||
+			!bytes.Equal(bundle.IdentityKey, bobPhone.identity) || bundle.DeviceID != bobPhone.id {
 			t.Fatalf("claim bundle: status %d", code)
 		}
 		got := 0
@@ -219,36 +216,122 @@ func TestEndToEnd(t *testing.T) {
 		}
 	}
 	if code := get(t, srv.URL+"/v1/keys/"+alice.id, bob.token, nil); code != http.StatusNotFound {
-		t.Fatalf("bundle for user without keys: status %d", code)
+		t.Fatalf("devices of a user without keys: status %d", code)
 	}
+	alicePhone := publishKeys(t, srv.URL, alice.token)
 
-	encSend := map[string]string{"type": "send", "client_id": "1b6a9f3e-7c1d-4d5e-9f00-1234567890ab", "to": bob.id,
-		"envelope": `{"v":1,"ct":"opaque"}`, "identity_key": base64.StdEncoding.EncodeToString(randomKey())}
-	aws.WriteJSON(encSend)
-	if f := readType(t, aws, "error"); f.Code != "stale_identity" {
+	encSend := func(id string, to string, envs map[string]keyedDevice) map[string]any {
+		m := map[string]any{}
+		for dev, k := range envs {
+			m[dev] = map[string]string{"envelope": `{"ct":"for ` + dev + `"}`, "identity_key": base64.StdEncoding.EncodeToString(k.identity)}
+		}
+		return map[string]any{"type": "send", "client_id": id, "to": to, "envelopes": m}
+	}
+	stale := keyedDevice{bobPhone.id, randomKey()}
+	aws.WriteJSON(encSend("1b6a9f3e-7c1d-4d5e-9f00-1234567890ab", bob.id, map[string]keyedDevice{bobPhone.id: stale}))
+	if f := readType(t, aws, "error"); f.Code != "devices_changed" {
 		t.Fatalf("stale identity not caught: %+v", f)
 	}
-	encSend["identity_key"] = base64.StdEncoding.EncodeToString(identity)
-	aws.WriteJSON(encSend)
+	aws.WriteJSON(encSend("1b6a9f3e-7c1d-4d5e-9f00-1234567890ab", bob.id, map[string]keyedDevice{bobPhone.id: bobPhone}))
 	enc := readType(t, bws, "message")
-	if enc.Message.Envelope == nil || *enc.Message.Envelope != encSend["envelope"] || enc.Message.Body != "" {
+	if enc.Message.Envelopes[bobPhone.id] != `{"ct":"for `+bobPhone.id+`"}` || enc.Message.Body != "" || enc.Message.SenderDevice != alicePhone.id {
 		t.Fatalf("encrypted message %+v", enc.Message)
 	}
 
-	// Bob moves to a new phone: its new identity key signs the old phone out.
+	// Bob links a tablet: it shows a code, his phone approves it, and the
+	// tablet picks up its own session.
+	var started struct {
+		Code string
+		Poll string
+	}
+	if code := post(t, srv.URL+"/v1/link/start", "", map[string]string{"device_name": "Tablet"}, &started); code != 200 || len(started.Code) != 9 {
+		t.Fatalf("link start: %d %+v", code, started)
+	}
+	if code := get(t, srv.URL+"/v1/link/"+started.Poll, "", nil); code != http.StatusAccepted {
+		t.Fatalf("link poll before approval: %d", code)
+	}
+	if code := post(t, srv.URL+"/v1/link/approve", bob.token, map[string]string{"code": "0000-0000"}, nil); code != http.StatusNotFound && started.Code != "0000-0000" {
+		t.Fatalf("wrong link code: %d", code)
+	}
+	if code := post(t, srv.URL+"/v1/link/approve", bob.token, map[string]string{"code": started.Code}, nil); code != 200 {
+		t.Fatalf("link approve: %d", code)
+	}
+	var linked struct {
+		Token string
+		User  struct{ ID string }
+	}
+	if code := get(t, srv.URL+"/v1/link/"+started.Poll, "", &linked); code != 200 || linked.Token == "" || linked.User.ID != bob.id {
+		t.Fatalf("link pickup: %d %+v", code, linked)
+	}
+	if code := get(t, srv.URL+"/v1/link/"+started.Poll, "", nil); code != http.StatusNotFound {
+		t.Fatalf("link token handed out twice: %d", code)
+	}
+	if code := post(t, srv.URL+"/v1/link/approve", linked.Token, map[string]string{"code": "1234-5678"}, nil); code != http.StatusForbidden {
+		t.Fatalf("a linked device linked another: %d", code)
+	}
+	// It sees only messages sent from now on.
+	var tabletSync []struct{ ID int64 }
+	get(t, srv.URL+"/v1/sync?after=0", linked.Token, &tabletSync)
+	if len(tabletSync) != 0 {
+		t.Fatalf("linked device got old messages: %+v", tabletSync)
+	}
+	tablet := publishKeys(t, srv.URL, linked.Token)
+	tws := dial(t, srv.URL, linked.Token)
+
+	// Alice must now encrypt for both of Bob's devices.
+	aws.WriteJSON(encSend("2b6a9f3e-7c1d-4d5e-9f00-1234567890ab", bob.id, map[string]keyedDevice{bobPhone.id: bobPhone}))
+	if f := readType(t, aws, "error"); f.Code != "devices_changed" {
+		t.Fatalf("missing device not caught: %+v", f)
+	}
+	aws.WriteJSON(encSend("2b6a9f3e-7c1d-4d5e-9f00-1234567890ab", bob.id, map[string]keyedDevice{bobPhone.id: bobPhone, tablet.id: tablet}))
+	if f := readType(t, tws, "message"); f.Message.Envelopes[tablet.id] == "" {
+		t.Fatalf("tablet message %+v", f.Message)
+	}
+	// Bob's phone replies, with a copy for his tablet so it shows there too.
+	bws.WriteJSON(encSend("3b6a9f3e-7c1d-4d5e-9f00-1234567890ab", alice.id, map[string]keyedDevice{alicePhone.id: alicePhone, tablet.id: tablet}))
+	if f := readType(t, tws, "message"); f.Message.SenderDevice != bobPhone.id || f.Message.Envelopes[tablet.id] == "" {
+		t.Fatalf("own copy on tablet %+v", f.Message)
+	}
+	// Some of your own devices but not all is refused.
+	bws.WriteJSON(encSend("4b6a9f3e-7c1d-4d5e-9f00-1234567890ab", bob.id, map[string]keyedDevice{}))
+	if f := readType(t, bws, "error"); f.Code != "bad_recipient" {
+		t.Fatalf("empty message to self: %+v", f)
+	}
+
+	// Bob sees both devices and removes the tablet, which is signed out at once.
+	var devs []struct {
+		ID      string
+		Linked  bool
+		Current bool
+	}
+	if code := get(t, srv.URL+"/v1/devices", bob.token, &devs); code != 200 || len(devs) != 2 ||
+		devs[0].ID != bobPhone.id || !devs[0].Current || !devs[1].Linked {
+		t.Fatalf("devices: %d %+v", code, devs)
+	}
+	if code := do(t, "DELETE", srv.URL+"/v1/devices/"+bobPhone.id, linked.Token, nil, nil); code != http.StatusForbidden {
+		t.Fatalf("tablet removed the phone: %d", code)
+	}
+	if code := do(t, "DELETE", srv.URL+"/v1/devices/"+tablet.id, bob.token, nil, nil); code != http.StatusNoContent {
+		t.Fatalf("remove tablet: %d", code)
+	}
+	if code := get(t, srv.URL+"/v1/me", linked.Token, nil); code != http.StatusUnauthorized {
+		t.Fatalf("removed tablet still signed in: %d", code)
+	}
+	tws.SetReadDeadline(time.Now().Add(5 * time.Second))
+	for {
+		var f frame
+		if err := tws.ReadJSON(&f); err != nil {
+			break // kicked off
+		}
+	}
+
+	// Bob moves to a new phone: signing in there signs the old phone out.
 	var codeResp struct {
 		DevCode string `json:"dev_code"`
 	}
 	post(t, srv.URL+"/v1/auth/request-code", "", map[string]string{"phone": "+1666" + suffix}, &codeResp)
 	var newPhone struct{ Token string }
 	post(t, srv.URL+"/v1/auth/verify", "", map[string]string{"phone": "+1666" + suffix, "code": codeResp.DevCode}, &newPhone)
-	pub2, priv2, _ := ed25519.GenerateKey(rand.Reader)
-	spk2 := randomKey()
-	takeover := map[string]any{"identity_key": randomKey(), "signing_key": []byte(pub2),
-		"signed_prekey": map[string]any{"id": 1, "public_key": spk2, "signature": ed25519.Sign(priv2, spk2)}}
-	if code := do(t, "PUT", srv.URL+"/v1/keys", newPhone.Token, takeover, nil); code != 200 {
-		t.Fatalf("publish from new phone: status %d", code)
-	}
 	if code := get(t, srv.URL+"/v1/me", bob.token, nil); code != http.StatusUnauthorized {
 		t.Fatalf("old phone still signed in: status %d", code)
 	}
@@ -324,11 +407,54 @@ type frame struct {
 	Status     string
 	MessageIDs []int64 `json:"message_ids"`
 	Message    *struct {
-		ID       int64
-		ClientID string `json:"client_id"`
-		Body     string
-		Envelope *string
+		ID           int64
+		ClientID     string `json:"client_id"`
+		Body         string
+		SenderDevice string            `json:"sender_device"`
+		Envelopes    map[string]string `json:"envelopes"`
 	}
+}
+
+// keyedDevice is a device and the identity key it published.
+type keyedDevice struct {
+	id       string
+	identity []byte
+}
+
+// publishKeys publishes fresh keys for the device holding token, with the
+// given one-time prekey IDs, and returns that device.
+func publishKeys(t *testing.T, base, token string, preKeyIDs ...int) keyedDevice {
+	t.Helper()
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	identity, spk := randomKey(), randomKey()
+	otks := []map[string]any{}
+	for _, id := range preKeyIDs {
+		otks = append(otks, map[string]any{"id": id, "public_key": randomKey()})
+	}
+	req := map[string]any{
+		"identity_key":     identity,
+		"signing_key":      []byte(pub),
+		"signed_prekey":    map[string]any{"id": 1, "public_key": spk, "signature": ed25519.Sign(priv, spk)},
+		"one_time_prekeys": otks,
+	}
+	var left struct {
+		OneTimePreKeys int `json:"one_time_prekeys"`
+	}
+	if code := do(t, "PUT", base+"/v1/keys", token, req, &left); code != 200 || left.OneTimePreKeys != len(preKeyIDs) {
+		t.Fatalf("publish keys: status %d, left %d", code, left.OneTimePreKeys)
+	}
+	var devs []struct {
+		ID      string
+		Current bool
+	}
+	get(t, base+"/v1/devices", token, &devs)
+	for _, d := range devs {
+		if d.Current {
+			return keyedDevice{d.ID, identity}
+		}
+	}
+	t.Fatal("no current device")
+	return keyedDevice{}
 }
 
 func readType(t *testing.T, c *websocket.Conn, typ string) frame {

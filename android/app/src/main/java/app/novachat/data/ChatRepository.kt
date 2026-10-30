@@ -69,6 +69,16 @@ class ChatRepository(
     /** Ratchet sessions must advance one message at a time. */
     private val cryptoLock = Mutex()
 
+    /** Which of the account's devices this is; the server says so when the socket connects. */
+    @Volatile
+    private var deviceId: String? = null
+
+    /** User ID to the devices they receive messages on, as the server last listed them. */
+    private val deviceCache = ConcurrentHashMap<String, List<DeviceKeyDto>>()
+
+    /** How often each message was encrypted again because someone's devices changed. */
+    private val reencrypts = ConcurrentHashMap<String, Int>()
+
     /** Messages being encrypted/uploaded right now, so a resend never doubles up. */
     private val inFlight = ConcurrentHashMap.newKeySet<String>()
 
@@ -477,6 +487,8 @@ class ChatRepository(
         jobs = emptyList()
         socket.disconnect()
         session = null
+        deviceId = null
+        deviceCache.clear()
         myId.value = null
         typing.value = emptyMap()
         _presence.value = emptyMap()
@@ -801,8 +813,12 @@ class ChatRepository(
      */
     private suspend fun applyControl(from: String, peer: String, c: MessageContent, sentAtMillis: Long) {
         c.call?.let {
-            // Calls are one-to-one: ignore call signals inside a group chat.
-            if (peer == from) _callSignals.tryEmit(IncomingCallSignal(from, it, sentAtMillis))
+            when {
+                // Calls are one-to-one: ignore call signals inside a group chat.
+                peer == from -> _callSignals.tryEmit(IncomingCallSignal(from, it, sentAtMillis))
+                // You answered or declined on another of your devices.
+                from == session?.user?.id -> _callSignals.tryEmit(IncomingCallSignal(peer, it, sentAtMillis, elsewhere = true))
+            }
             return
         }
         if (applyStatusControl(from, c, sentAtMillis)) return
@@ -982,9 +998,37 @@ class ChatRepository(
      * first message has set up encryption with this person.
      */
     suspend fun safetyNumber(peerId: String): String? {
-        val me = session?.user ?: return null
-        val theirs = cipher.remoteIdentity(peerId) ?: return null
-        return SessionCipher.safetyNumber(me.id, keys.identity().dh.publicKey, peerId, theirs)
+        val s = session ?: return null
+        val me = s.user.id
+        return try {
+            // Fresh lists, so a newly linked device changes the number right away.
+            deviceCache.remove(peerId)
+            deviceCache.remove(me)
+            val theirs = devicesOf(s, peerId)
+            val mine = devicesOf(s, me)
+            if (theirs.isEmpty() || mine.isEmpty()) null
+            else SessionCipher.safetyNumber(me, combinedIdentity(mine.map { it.identityKey }), peerId, combinedIdentity(theirs.map { it.identityKey }))
+        } catch (e: ApiException) {
+            null
+        }
+    }
+
+    /** Your phone and the devices linked to it. */
+    suspend fun linkedDevices(): List<LinkedDevice> {
+        val s = session ?: throw ApiException(0, "signed_out", "Not signed in")
+        return api.linkedDevices(s)
+    }
+
+    /** Lets the device showing [code] use this account; its messages are encrypted for it from now on. */
+    suspend fun approveLink(code: String): LinkedDevice {
+        val s = session ?: throw ApiException(0, "signed_out", "Not signed in")
+        return api.approveLink(s, code).also { deviceCache.remove(s.user.id) }
+    }
+
+    suspend fun removeDevice(id: String) {
+        val s = session ?: throw ApiException(0, "signed_out", "Not signed in")
+        api.removeDevice(s, id)
+        deviceCache.remove(s.user.id)
     }
 
     private suspend fun markRead(peerId: String) {
@@ -1082,29 +1126,47 @@ class ChatRepository(
 
     private suspend fun deliverOnce(msg: MessageEntity) {
         val s = session ?: return
+        // Not connected yet: it goes out once the server says which device this is.
+        val myDevice = deviceId ?: return
         // A file goes up (encrypted) before the message that points to it.
         val attachment = if (msg.attachment != null) uploadIfNeeded(s, msg) ?: return else null
-        var envelope = msg.envelope
-        var identityKey = msg.envelopeKey
-        if (envelope == null || identityKey == null) {
-            if (!cipher.hasSession(msg.recipientId)) {
+        var envelopes = msg.envelope?.takeIf { msg.envelopeKey == DEVICE_ENVELOPES }
+        if (envelopes == null) {
+            val targets = try {
+                targetsFor(s, msg, myDevice)
+            } catch (e: ApiException) {
+                // Offline, or the server is waking up or updating: try again later.
+                if (e.status != 0 && e.status < 500) dao.setFailed(msg.senderId, msg.clientId, true)
+                return
+            }
+            if (targets == null) {
+                // They haven't opened NovaChat since signing up: keep the
+                // message queued and try again later.
+                _waitingForKeys.update { it + msg.recipientId }
+                return
+            }
+            _waitingForKeys.update { it - msg.recipientId }
+            if (targets.isEmpty()) {
+                // A copy for your other devices, and there are none.
+                dao.deleteMessage(msg.senderId, msg.clientId)
+                return
+            }
+            for ((userId, device) in targets) {
+                val address = address(userId, device.id)
+                if (cipher.remoteIdentity(address)?.b64() == device.identityKey) continue
                 val bundle = try {
-                    api.keyBundle(s, msg.recipientId)
+                    api.keyBundle(s, userId, device.id)
                 } catch (e: ApiException) {
-                    when {
-                        // They haven't opened NovaChat since signing up: keep the
-                        // message queued and try again later.
-                        e.status == 404 -> _waitingForKeys.update { it + msg.recipientId }
-                        // Offline, or the server is waking up or updating.
-                        e.status == 0 || e.status >= 500 -> Unit
-                        else -> dao.setFailed(msg.senderId, msg.clientId, true)
-                    }
+                    // That device just signed out: look again on the next try.
+                    if (e.status == 404) deviceCache.remove(userId)
                     return
                 }
-                _waitingForKeys.update { it - msg.recipientId }
                 try {
                     cryptoLock.withLock {
-                        if (!cipher.hasSession(msg.recipientId)) cipher.startSession(msg.recipientId, bundle.toPreKeyBundle())
+                        if (cipher.remoteIdentity(address)?.b64() != device.identityKey) {
+                            keys.forgetSessions(address)
+                            cipher.startSession(address, bundle.toPreKeyBundle())
+                        }
                     }
                 } catch (e: CryptoException) {
                     // A bad signature on their prekey: never send to keys we cannot trust.
@@ -1127,24 +1189,75 @@ class ChatRepository(
                             ),
                         )
                     ).toByteArray()
-                    envelope = NovaJson.encodeToString(cipher.encrypt(msg.recipientId, content))
-                    identityKey = cipher.remoteIdentity(msg.recipientId)?.b64()
-                    dao.setEnvelope(msg.senderId, msg.clientId, envelope, identityKey)
+                    // One envelope per device, each over that device's own session.
+                    val sealed = buildJsonObject {
+                        for ((userId, device) in targets) {
+                            val address = address(userId, device.id)
+                            put(
+                                device.id,
+                                buildJsonObject {
+                                    put("envelope", NovaJson.encodeToString(cipher.encrypt(address, content)))
+                                    put("identity_key", cipher.remoteIdentity(address)?.b64())
+                                },
+                            )
+                        }
+                    }.toString()
+                    envelopes = sealed
+                    dao.setEnvelope(msg.senderId, msg.clientId, sealed, DEVICE_ENVELOPES)
                 }
             } catch (e: CryptoException) {
                 dao.setFailed(msg.senderId, msg.clientId, true)
                 return
             }
         }
+        val sealed = envelopes ?: return
         socket.send(
             buildJsonObject {
                 put("type", "send")
                 put("client_id", msg.clientId)
                 put("to", msg.recipientId)
-                put("envelope", envelope)
-                put("identity_key", identityKey)
+                put("envelopes", NovaJson.parseToJsonElement(sealed))
             }.toString(),
         )
+    }
+
+    /**
+     * The devices a message is encrypted for, as (user ID, device) pairs:
+     * every device of the recipient, plus your own other devices so the chat
+     * shows there too. Null when the recipient has no devices yet.
+     */
+    private suspend fun targetsFor(s: Session, msg: MessageEntity, myDevice: String): List<Pair<String, DeviceKeyDto>>? {
+        val me = s.user.id
+        val mine = devicesOf(s, me).filter { it.id != myDevice }.map { me to it }
+        if (msg.recipientId == me) return mine
+        val theirs = devicesOf(s, msg.recipientId).map { msg.recipientId to it }
+        if (theirs.isEmpty()) return null
+        return if (copiesToOwnDevices(msg)) theirs + mine else theirs
+    }
+
+    /** Someone's devices, asked from the server when not known yet. Empty when they have none. */
+    private suspend fun devicesOf(s: Session, userId: String): List<DeviceKeyDto> {
+        deviceCache[userId]?.let { return it }
+        val list = try {
+            api.deviceKeys(s, userId)
+        } catch (e: ApiException) {
+            if (e.status != 404) throw e
+            emptyList()
+        }
+        if (list.isNotEmpty()) deviceCache[userId] = list
+        return list
+    }
+
+    private fun address(userId: String, deviceId: String) = "$userId.$deviceId"
+
+    /**
+     * Whether your other devices get a copy. Group messages reach them
+     * through one copy addressed to you, and status updates stay out.
+     */
+    private fun copiesToOwnDevices(msg: MessageEntity): Boolean {
+        if (msg.groupId != null) return false
+        val c = msg.control?.let { runCatching { NovaJson.decodeFromString<MessageContent>(it) }.getOrNull() } ?: return true
+        return c.status == null && c.statusSeen == null && c.statusDelete == null
     }
 
     /**
@@ -1205,14 +1318,16 @@ class ChatRepository(
                 parentClientId = parent,
             )
         }
+        // One more copy for your own other devices, so the group shows there too.
+        val all = if (copies.isEmpty()) copies else copies + copies[0].copy(clientId = UUID.randomUUID().toString(), recipientId = me)
         val saved = db.withTransaction {
             if (parent != null && dao.copyCount(me, parent) > 0) return@withTransaction false
-            dao.upsertMessages(copies)
+            dao.upsertMessages(all)
             // Alone in the group: nothing to send, so the message counts as sent.
             if (parent != null && copies.isEmpty()) dao.setIdIfMissing(me, parent, dao.lastSeq() ?: 0L)
             true
         }
-        if (saved) copies.forEach { scope.launch { deliver(it) } }
+        if (saved) all.forEach { scope.launch { deliver(it) } }
     }
 
     suspend fun createGroup(name: String, memberIds: List<String>): String {
@@ -1343,6 +1458,7 @@ class ChatRepository(
     private suspend fun onFrame(frame: ServerFrame) {
         when (frame.type) {
             "ready" -> {
+                frame.deviceId?.let { deviceId = it }
                 if (!appActive) sendActive()
                 openPeer?.let(::queryPresence)
                 catchUp()
@@ -1374,10 +1490,11 @@ class ChatRepository(
 
     private suspend fun onSendError(me: String, clientId: String, code: String?) {
         val msg = dao.message(me, clientId) ?: return
-        if (code == "stale_identity" && msg.envelope != null) {
-            // They reinstalled or moved to a new phone: start a fresh session
-            // with their new keys and encrypt the message again.
-            cryptoLock.withLock { keys.forgetSessions(msg.recipientId) }
+        if (code == "devices_changed" && msg.envelope != null && (reencrypts.merge(clientId, 1, Int::plus) ?: 1) <= MAX_REENCRYPTS) {
+            // Someone linked, removed or reinstalled a device: look up their
+            // devices again and encrypt the message again.
+            deviceCache.remove(msg.recipientId)
+            deviceCache.remove(me)
             dao.setEnvelope(me, clientId, null, null)
             scope.launch { deliver(msg.copy(envelope = null, envelopeKey = null)) }
         } else {
@@ -1423,7 +1540,8 @@ class ChatRepository(
     private suspend fun applyMessages(dtos: List<MessageDto>) {
         val s = session ?: return
         val me = s.user.id
-        if (dtos.isEmpty()) return
+        // Until the server says which device this is, envelopes can't be picked; sync fetches them again.
+        if (dtos.isEmpty() || deviceId == null) return
         val changedGroups = mutableSetOf<String>()
         val fresh = mutableListOf<Long>()
         // A brand-new install catching up on history does not notify.
@@ -1461,38 +1579,49 @@ class ChatRepository(
     private suspend fun store(dto: MessageDto, me: String): String? {
         val existing = dao.message(dto.senderId, dto.clientId)
         if (existing != null) {
+            reencrypts.remove(dto.clientId)
             dao.applyServerCopy(dto.senderId, dto.clientId, dto.id, dto.deliveredAt, dto.readAt)
             // The first member's copy getting through marks the group message sent.
             existing.parentClientId?.let { dao.setIdIfMissing(me, it, dto.id) }
             return null
         }
-        // Group messages are stored under their shared ID, so look for the server ID too.
-        if (dto.senderId != me && dao.hasId(dto.id)) return null
+        // Group messages are stored under their shared ID, so look for the server ID too
+        // (also for your own, sent from another of your devices).
+        if ((dto.senderId != me || dto.senderDevice != deviceId) && dao.hasId(dto.id)) return null
         val peer = if (dto.senderId == me) dto.recipientId else dto.senderId
         val base = dto.toEntity(peer)
         val groupId = dto.groupId
-        if (groupId != null && dto.envelope == null) {
+        if (groupId != null && dto.envelope == null && dto.envelopes == null) {
             // A group event written by the server: "Ana added Ben".
             if (dto.recipientId != me) return null
             dao.insertMessage(base.copy(peerId = groupId, recipientId = groupId, groupId = groupId, system = true))
             runCatching { NovaJson.decodeFromString<GroupEvent>(dto.body) }.getOrNull()?.let { applyGroupEvent(groupId, it, me) }
             return groupId
         }
-        val envelope = dto.envelope
+        val envelopes = dto.envelopes
+        val envelope = if (envelopes != null) deviceId?.let { envelopes[it] } else dto.envelope
         if (envelope == null) {
-            dao.insertMessage(base) // sent before encryption existed
+            when {
+                // Sent from another of your devices for someone else's devices only
+                // (a group member's copy, a status): nothing to show here.
+                envelopes != null && dto.senderId == me -> dao.insertMessage(base.copy(body = "", control = "{}"))
+                envelopes != null -> dao.insertMessage(base.copy(body = "", undecryptable = true))
+                else -> dao.insertMessage(base) // sent before encryption existed
+            }
             return null
         }
-        if (dto.senderId == me) {
+        if (envelopes == null && dto.senderId == me) {
             // Our own message from an earlier install: its keys are gone.
             dao.insertMessage(base.copy(body = "", undecryptable = true))
             return null
         }
+        // Each device has its own session; messages from before linked devices used one per person.
+        val from = if (envelopes != null) address(dto.senderId, dto.senderDevice.orEmpty()) else peer
         var refresh: String? = null
         cryptoLock.withLock {
             db.withTransaction {
                 val content = try {
-                    val decrypted = cipher.decrypt(peer, NovaJson.decodeFromString<Envelope>(envelope))
+                    val decrypted = cipher.decrypt(from, NovaJson.decodeFromString<Envelope>(envelope))
                     NovaJson.decodeFromString<MessageContent>(String(decrypted.plaintext))
                 } catch (e: CryptoException) {
                     null
@@ -1591,6 +1720,11 @@ class ChatRepository(
         val me = session?.user?.id ?: return
         if (frame.messageIds.isEmpty()) return
         val at = frame.at ?: OffsetDateTime.now().toString()
+        if (frame.from == me) {
+            // You read these on another of your devices.
+            if (frame.status == "read") writeLock.withLock { dao.markReadHere(me, frame.messageIds, at) }
+            return
+        }
         writeLock.withLock {
             if (frame.status == "read") dao.markRead(me, frame.messageIds, at) else dao.markDelivered(me, frame.messageIds, at)
             dao.parentsOf(frame.messageIds).forEach { dao.rollUpReceipts(me, it, at) }
@@ -1634,6 +1768,9 @@ class ChatRepository(
 
     private companion object {
         const val SYNC_PAGE = 500
+        /** [MessageEntity.envelopeKey] of a message sealed for each device (the envelope is a JSON map). */
+        const val DEVICE_ENVELOPES = "devices"
+        const val MAX_REENCRYPTS = 3
         const val MAX_PINNED = 3
         // The server takes at most this many numbers per request.
         const val CONTACTS_PER_REQUEST = 5000

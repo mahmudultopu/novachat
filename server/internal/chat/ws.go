@@ -1,7 +1,6 @@
 package chat
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -35,21 +34,28 @@ type inbound struct {
 	ClientID string `json:"client_id,omitempty"`
 	To       string `json:"to,omitempty"`
 	Body     string `json:"body,omitempty"`
-	// Encrypted messages: the opaque envelope, and the recipient identity
-	// key it was encrypted to (base64), so a stale session is caught.
-	Envelope    string  `json:"envelope,omitempty"`
-	IdentityKey string  `json:"identity_key,omitempty"`
-	Status      string  `json:"status,omitempty"` // "delivered" or "read"
-	MessageIDs  []int64 `json:"message_ids,omitempty"`
+	// Encrypted messages: one envelope per device, for every device of the
+	// recipient and (optionally) the sender's other devices.
+	Envelopes  map[string]deviceEnvelope `json:"envelopes,omitempty"`
+	Status     string                    `json:"status,omitempty"` // "delivered" or "read"
+	MessageIDs []int64                   `json:"message_ids,omitempty"`
 	// "active" frames: whether the app is on screen. A phone that stays
 	// connected in the background (for notifications) is not "online".
 	Active *bool `json:"active,omitempty"`
+}
+
+// deviceEnvelope is a message encrypted for one device, with the identity key
+// it was encrypted to (base64), so a stale session is caught.
+type deviceEnvelope struct {
+	Envelope    string `json:"envelope"`
+	IdentityKey string `json:"identity_key"`
 }
 
 // Frames sent by the server.
 type outbound struct {
 	Type       string   `json:"type"` // "ready", "message", "receipt", "typing", "presence" or "error"
 	UserID     string   `json:"user_id,omitempty"`
+	DeviceID   string   `json:"device_id,omitempty"` // "ready": which device this connection is
 	Message    *Message `json:"message,omitempty"`
 	Status     string   `json:"status,omitempty"`
 	MessageIDs []int64  `json:"message_ids,omitempty"`
@@ -72,10 +78,11 @@ var upgrader = websocket.Upgrader{
 }
 
 type client struct {
-	userID string
-	conn   *websocket.Conn
-	send   chan []byte
-	cancel context.CancelFunc
+	userID   string
+	deviceID string
+	conn     *websocket.Conn
+	send     chan []byte
+	cancel   context.CancelFunc
 	// active is false while the app is in the background.
 	active atomic.Bool
 }
@@ -101,11 +108,12 @@ func (h *Handlers) serveWS(w http.ResponseWriter, r *http.Request) {
 		return // Upgrade already wrote the HTTP error
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	c := &client{userID: auth.UserID(r.Context()), conn: conn, send: make(chan []byte, sendBufferSize), cancel: cancel}
+	d := auth.CurrentDevice(r.Context())
+	c := &client{userID: d.UserID, deviceID: d.ID, conn: conn, send: make(chan []byte, sendBufferSize), cancel: cancel}
 	// Apps count as on screen until they say otherwise (older apps never do).
 	c.active.Store(true)
 	wasOnline := h.Hub.anyActive(c.userID)
-	if _, err := h.Hub.add(ctx, c); err != nil {
+	if err := h.Hub.add(ctx, c); err != nil {
 		slog.Error("hub add failed", "err", err)
 		cancel()
 		conn.Close()
@@ -124,7 +132,7 @@ func (h *Handlers) serveWS(w http.ResponseWriter, r *http.Request) {
 	go h.keepOnline(ctx, c.userID)
 
 	go c.writeLoop(ctx)
-	c.sendJSON(outbound{Type: "ready", UserID: c.userID})
+	c.sendJSON(outbound{Type: "ready", UserID: c.userID, DeviceID: c.deviceID})
 	h.readLoop(ctx, c)
 	cancel()
 }
@@ -203,7 +211,7 @@ func (h *Handlers) handleSend(ctx context.Context, c *client, in inbound) {
 		c.sendJSON(outbound{Type: "error", Code: code, Error: msg, ClientID: in.ClientID})
 	}
 	body := strings.TrimSpace(in.Body)
-	var envelope *string
+	var envelopes map[string]string
 	switch {
 	case !auth.IsUUID(in.ClientID):
 		fail("bad_client_id", "client_id must be a UUID")
@@ -211,18 +219,34 @@ func (h *Handlers) handleSend(ctx context.Context, c *client, in inbound) {
 	case !auth.IsUUID(in.To):
 		fail("bad_recipient", "to must be a user id")
 		return
-	case in.Envelope != "":
-		if len(in.Envelope) > maxEnvelope {
+	case len(in.Envelopes) > 0:
+		size := 0
+		for _, e := range in.Envelopes {
+			size += len(e.Envelope)
+		}
+		if size > maxEnvelope {
 			fail("too_long", "message is too long")
 			return
 		}
-		if !h.identityMatches(ctx, in.To, in.IdentityKey) {
-			// The recipient reinstalled or moved to a new phone: the app
-			// fetches their new keys and encrypts again.
-			fail("stale_identity", "recipient has new encryption keys")
+		ok, err := h.devicesMatch(ctx, c, in.To, in.Envelopes)
+		if err != nil {
+			slog.Error("device lookup failed", "err", err)
+			fail("internal", "could not send, try again")
 			return
 		}
-		body, envelope = "", &in.Envelope
+		if !ok {
+			// Someone added, removed or reinstalled a device: the app
+			// fetches the current devices and encrypts again.
+			fail("devices_changed", "devices changed, encrypt again")
+			return
+		}
+		body, envelopes = "", map[string]string{}
+		for id, e := range in.Envelopes {
+			envelopes[id] = e.Envelope
+		}
+	case to(in.To) == c.userID:
+		fail("bad_recipient", "nothing to send to yourself")
+		return
 	case body == "":
 		fail("empty", "message is empty")
 		return
@@ -230,7 +254,7 @@ func (h *Handlers) handleSend(ctx context.Context, c *client, in inbound) {
 		fail("too_long", "message is too long")
 		return
 	}
-	m, inserted, err := h.Store.Insert(ctx, c.userID, strings.ToLower(in.ClientID), in.To, body, envelope)
+	m, inserted, err := h.Store.Insert(ctx, c.userID, c.deviceID, strings.ToLower(in.ClientID), to(in.To), body, envelopes)
 	if errors.Is(err, ErrUnknownRecipient) {
 		fail("bad_recipient", err.Error())
 		return
@@ -327,21 +351,59 @@ func (h *Handlers) handlePresenceQuery(ctx context.Context, c *client, userID st
 	c.sendJSON(f)
 }
 
-// identityMatches reports whether identityKey (base64) is the recipient's
-// current identity key in the key directory.
-func (h *Handlers) identityMatches(ctx context.Context, userID, identityKey string) bool {
-	want, err := base64.StdEncoding.DecodeString(identityKey)
-	if err != nil || len(want) == 0 {
-		return false
-	}
-	have, err := h.Keys.IdentityKey(ctx, userID)
+func to(id string) string { return strings.ToLower(id) }
+
+// devicesMatch checks that a message is encrypted for exactly the right
+// devices, each with its current identity key: every device of the
+// recipient, and either all of the sender's other devices or none of them.
+// A message to yourself (a copy for your other devices) needs them all.
+func (h *Handlers) devicesMatch(ctx context.Context, c *client, recipient string, envs map[string]deviceEnvelope) (bool, error) {
+	recipient = to(recipient)
+	theirs, err := h.Keys.Devices(ctx, recipient)
 	if err != nil {
-		if !errors.Is(err, keys.ErrNoKeys) {
-			slog.Error("identity lookup failed", "err", err)
-		}
-		return false
+		return false, err
 	}
-	return bytes.Equal(have, want)
+	mine := theirs
+	if recipient != c.userID {
+		if mine, err = h.Keys.Devices(ctx, c.userID); err != nil {
+			return false, err
+		}
+	}
+	want := func(ds []keys.Device) map[string]string {
+		out := map[string]string{}
+		for _, d := range ds {
+			if d.ID != c.deviceID {
+				out[d.ID] = base64.StdEncoding.EncodeToString(d.IdentityKey)
+			}
+		}
+		return out
+	}
+	required, own := want(theirs), want(mine)
+	if len(required) == 0 {
+		return false, nil
+	}
+	covered := 0
+	for id, key := range required {
+		e, ok := envs[id]
+		if !ok || e.IdentityKey != key {
+			return false, nil
+		}
+		covered++
+	}
+	if len(envs) == covered {
+		return true, nil
+	}
+	for id, key := range own {
+		if _, done := required[id]; done {
+			continue
+		}
+		e, ok := envs[id]
+		if !ok || e.IdentityKey != key {
+			return false, nil
+		}
+		covered++
+	}
+	return len(envs) == covered, nil
 }
 
 func (h *Handlers) handleReceipt(ctx context.Context, c *client, in inbound) {
@@ -359,8 +421,15 @@ func (h *Handlers) handleReceipt(ctx context.Context, c *client, in inbound) {
 		bySender[m.SenderID] = append(bySender[m.SenderID], m.ID)
 	}
 	at := time.Now().UTC().Format(time.RFC3339Nano)
+	var all []int64
 	for sender, ids := range bySender {
 		b, _ := json.Marshal(outbound{Type: "receipt", Status: in.Status, MessageIDs: ids, At: at, From: c.userID})
 		h.Hub.Publish(ctx, sender, b)
+		all = append(all, ids...)
+	}
+	if in.Status == "read" && len(all) > 0 {
+		// Your other devices mark the chat read too.
+		b, _ := json.Marshal(outbound{Type: "receipt", Status: "read", MessageIDs: all, At: at, From: c.userID})
+		h.Hub.Publish(ctx, c.userID, b)
 	}
 }

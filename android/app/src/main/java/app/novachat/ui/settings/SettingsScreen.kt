@@ -46,7 +46,7 @@ import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(openProfile: () -> Unit, openStarred: () -> Unit, openPrivacy: () -> Unit, openAppearance: () -> Unit, openBackup: () -> Unit, modifier: Modifier = Modifier) {
+fun SettingsScreen(openProfile: () -> Unit, openStarred: () -> Unit, openPrivacy: () -> Unit, openAppearance: () -> Unit, openBackup: () -> Unit, openDevices: () -> Unit, modifier: Modifier = Modifier) {
     val container = appContainer()
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -143,6 +143,26 @@ fun SettingsScreen(openProfile: () -> Unit, openStarred: () -> Unit, openPrivacy
                         Text("Chat backup", style = MaterialTheme.typography.titleSmall)
                         Text(
                             "Save chats to a password-locked file, or restore them",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            Surface(
+                onClick = openDevices,
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 1.dp,
+            ) {
+                Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(painterResource(R.drawable.ic_devices), null, tint = MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.width(16.dp))
+                    Column {
+                        Text("Linked devices", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            "Use NovaChat on a tablet or a second phone",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )

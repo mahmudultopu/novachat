@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net/http"
 	"testing"
 	"time"
 )
@@ -52,6 +53,11 @@ func TestTwoStepPin(t *testing.T) {
 	if code := post(t, base+"/v1/auth/verify-pin", "", map[string]any{"challenge": ch, "pin": "123456"}, &res); code != 200 || res.Token == "" || res.User.ID != ana.id {
 		t.Fatalf("right pin: %d %+v", code, res)
 	}
+	// The new phone took the account over.
+	if code := get(t, base+"/v1/me", ana.token, nil); code != http.StatusUnauthorized {
+		t.Fatalf("old phone still signed in: %d", code)
+	}
+	ana.token = res.Token
 	// A challenge works once.
 	if code := post(t, base+"/v1/auth/verify-pin", "", map[string]any{"challenge": ch, "pin": "123456"}, nil); code != 401 {
 		t.Fatalf("challenge reused: %d", code)
