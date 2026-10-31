@@ -5,6 +5,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.novachat.AppContainer
 import app.novachat.data.ApiException
+import app.novachat.data.Session
+import app.novachat.data.User
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -28,6 +30,9 @@ data class AuthUiState(
     val resetAt: String? = null,
     /** Linking to a phone: the code to type there, or null once it expired. */
     val linkCode: String? = null,
+    /** Creating an account rather than logging in; the name to give it. */
+    val signUp: Boolean = false,
+    val name: String = "",
 ) {
     enum class Step { Phone, Code, Pin, Link }
 }
@@ -59,6 +64,11 @@ class AuthViewModel(private val container: AppContainer) : ViewModel() {
 
     fun onCountryCode(v: String) = _state.update { it.copy(countryCode = "+" + v.filter(Char::isDigit).take(4), error = null) }
     fun onNumber(v: String) = _state.update { it.copy(number = v.filter { c -> c.isDigit() || c == ' ' }.take(16), error = null) }
+    fun onName(v: String) = _state.update { it.copy(name = v.take(25), error = null) }
+
+    /** Switch between "Log in" and "Create account". Both use the same SMS sign-in. */
+    fun setSignUp(on: Boolean) = _state.update { it.copy(signUp = on, error = null) }
+
     fun onCode(v: String) {
         val digits = v.filter(Char::isDigit).take(6)
         _state.update { it.copy(code = digits, error = null) }
@@ -99,7 +109,7 @@ class AuthViewModel(private val container: AppContainer) : ViewModel() {
                 if (e.status == 404) break
                 continue // offline for a moment
             } ?: continue
-            container.sessionStore.signIn(res.token, res.user)
+            signIn(res.token, res.user)
             return
         }
         _state.update { it.copy(linkCode = null, error = "The code expired. Get a new one to try again.") }
@@ -130,7 +140,7 @@ class AuthViewModel(private val container: AppContainer) : ViewModel() {
             _state.update { it.copy(step = AuthUiState.Step.Pin, challenge = challenge, pin = "") }
             return@launchWithErrors
         }
-        container.sessionStore.signIn(res.token, res.user)
+        signIn(res.token, res.user)
     }
 
     fun submitPin() = finishWithPin(forgot = false)
@@ -146,7 +156,25 @@ class AuthViewModel(private val container: AppContainer) : ViewModel() {
             _state.update { it.copy(pin = "", resetAt = e.body?.resetAt ?: it.resetAt) }
             throw ApiException(e.status, e.code, pinErrorText(e), e.body)
         }
-        container.sessionStore.signIn(res.token, res.user)
+        signIn(res.token, res.user)
+    }
+
+    /**
+     * A new account made on the sign-up screen gets the name typed there, so the
+     * profile step can be skipped. An existing account keeps the name it has.
+     */
+    private suspend fun signIn(token: String, user: User) {
+        val name = _state.value.name.trim()
+        var signedIn = user
+        if (_state.value.signUp && name.isNotEmpty() && user.name.isBlank()) {
+            val url = container.sessionStore.currentServerUrl()
+            signedIn = try {
+                container.api.updateName(Session(token, user, url), name)
+            } catch (e: ApiException) {
+                user // the profile step asks again
+            }
+        }
+        container.sessionStore.signIn(token, signedIn)
     }
 
     private companion object {
